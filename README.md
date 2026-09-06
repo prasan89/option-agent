@@ -2,7 +2,7 @@
 
 AI-assisted quantitative research and options-flow analysis platform for Indian index derivatives.
 
-> **Safety:** Phase 1 is read-only market-data collection. Order placement is deliberately not implemented. API credentials and secrets must never be committed to Git.
+> **Safety:** Phase 2 remains read-only. The system infers market flow from public market-data observations; it does not identify institutional traders and does not place orders. API credentials and secrets must never be committed to Git.
 
 ## Phase 1 — Groww market data
 
@@ -18,9 +18,23 @@ Implemented:
 - Groww aggregated market-depth feed subscription
 - Raw feed snapshots persisted to Redis Stream `market:raw`
 - FastAPI endpoints for connectivity and market data
-- Trading remains disabled
 
-Groww documents that its Feed supports live LTP and market-depth subscriptions for derivatives and up to 1,000 subscribed instruments. The option-chain API exposes LTP, OI, volume and Greeks. See the official Groww API docs for the current limits and fields.
+## Phase 2 — Options-flow detection
+
+Implemented:
+
+- Redis-stream flow engine consuming Phase-1 observations
+- LTP-vs-best-bid/ask aggression inference
+- Bid/ask depth imbalance calculation
+- Price-momentum confirmation
+- Explainable 0–100 flow score
+- BUY/SELL directional classification with MEDIUM/HIGH confidence
+- Evidence labels for each signal
+- Output Redis Stream `flow:signals`
+- Start/stop/status API for the flow engine
+- Unit tests for aggressive buy/sell and noise filtering
+
+The Phase 2 detector is intentionally deterministic and explainable. It does **not** claim to see institutional orders. Groww's public feed provides LTP and aggregated market depth; option-chain data separately provides OI, volume and Greeks. OI/volume fusion is the next Phase 2 increment after the microstructure signal path is validated.
 
 ## Local setup
 
@@ -43,33 +57,26 @@ http://localhost:8000/docs
 ```bash
 curl http://localhost:8000/system/status
 curl http://localhost:8000/groww/status
+curl http://localhost:8000/flow/status
 ```
 
-### Important Groww authentication note
+### Starting Phase 2
 
-Groww's API-key/secret flow requires the current daily approval/token process described in its documentation. Access tokens also have an expiry. Do not hard-code or commit tokens. For local development, put the current token/credentials in `.env`; for SAP BTP, configure them as environment secrets.
+After the Groww feed has been started, start the flow engine:
 
-## Phase 1 flow
-
-```text
-Groww API / WebSocket Feed
-          |
-          v
-   GrowwFeedService
-          |
-          +------> LTP snapshots
-          |
-          +------> Aggregated market depth
-          |
-          v
-     Redis Stream
-      market:raw
-          |
-          v
-  Phase 2: Flow Detection
+```bash
+curl -X POST http://localhost:8000/flow/start
 ```
 
-### API endpoints
+Signals are published to Redis Stream `flow:signals`. Stop it with:
+
+```bash
+curl -X POST http://localhost:8000/flow/stop
+```
+
+Groww's API-key/secret flow requires the current token process described in its documentation. Do not hard-code or commit tokens. For SAP BTP, configure credentials as environment secrets.
+
+## API endpoints
 
 ```text
 GET  /health
@@ -82,9 +89,11 @@ GET  /groww/option-chain?expiry_date=YYYY-MM-DD
 GET  /groww/ltp?exchange_symbols=NSE_SYMBOL
 GET  /groww/nifty/instruments?expiry_date=YYYY-MM-DD&strike_min=...
 POST /groww/feed/start
-```
 
-The `/groww/feed/start` endpoint accepts up to 1,000 Groww instrument subscriptions and starts the read-only LTP + market-depth collector. No order API is exposed by the Phase 1 application.
+GET  /flow/status
+POST /flow/start
+POST /flow/stop
+```
 
 ## Architecture
 
@@ -109,30 +118,27 @@ The `/groww/feed/start` endpoint accepts up to 1,000 Groww instrument subscripti
                          market:raw
                                 |
                                 v
-                       Phase 2 Flow Engine
+                     Phase 2 Flow Engine
                                 |
-                                v
-                         ML / AI Agent
-                                |
-                                v
-                       Strategy / Risk
-                                |
-                                v
-                         Paper Trading
-                                |
-                                v
-                    Future broker execution
+                         +------+------+
+                         |             |
+                         v             v
+                  Flow Detector   flow:signals
+                         |
+                         v
+                  AI / ML research
 ```
 
-## Important limitation for our strategy
+## Important Groww limitation
 
-Groww's public feed currently gives us **LTP and aggregated market depth**, not a direct exchange-wide public trade tape identifying every market participant's buy/sell aggressor. Therefore Phase 2 must infer aggressive flow from quote/depth/LTP changes rather than claim that we can see institutional orders directly. We will validate the signal empirically before using it for any strategy.
+Groww's public feed currently gives **LTP and aggregated market depth**, not a direct exchange-wide public trade tape identifying every market participant's buy/sell aggressor. Therefore our flow engine infers aggression from observable quote/depth/LTP changes rather than claiming direct institutional-order visibility. Groww documents up to 1,000 live-feed subscriptions and exposes option-chain OI, volume and Greeks through its APIs.
 
 ## Roadmap
 
 0. Foundation — complete
 1. Groww market-data connection + agent foundation — complete in code; requires your Groww credentials to run live
-2. Options-flow detection
+2. Options-flow detection — microstructure layer complete
+2B. OI/volume/Greeks fusion + option-chain polling — next
 3. Flow intelligence and scoring
 4. Historical data and learning dataset
 5. ML prediction
