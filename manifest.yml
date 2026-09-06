@@ -10,6 +10,6 @@ applications:
     health-check-http-endpoint: /health
     env:
       APP_NAME: option-agent
-      APP_VERSION: 0.1.0
+      APP_VERSION: 0.2.0
       ENVIRONMENT: btp
       LOG_LEVEL: INFO
