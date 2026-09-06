@@ -1,0 +1,15 @@
+applications:
+  - name: option-agent-api
+    path: backend
+    memory: 512M
+    instances: 1
+    buildpacks:
+      - python_buildpack
+    command: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    health-check-type: http
+    health-check-http-endpoint: /health
+    env:
+      APP_NAME: option-agent
+      APP_VERSION: 0.1.0
+      ENVIRONMENT: btp
+      LOG_LEVEL: INFO
