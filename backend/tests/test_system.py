@@ -22,6 +22,7 @@ def test_system_status_keeps_trading_disabled() -> None:
     response = client.get("/system/status")
     assert response.status_code == 200
     assert response.json()["trading"] == "DISABLED"
+    assert response.json()["ai_agent"] == "READY"
 
 
 def test_groww_status_without_credentials() -> None:
@@ -34,3 +35,18 @@ def test_groww_status_without_credentials() -> None:
 def test_groww_profile_requires_credentials() -> None:
     response = client.get("/groww/profile")
     assert response.status_code == 503
+
+
+def test_agent_status() -> None:
+    response = client.get("/agent/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "READY"
+    assert body["llm_connected"] is False
+    assert "get_nifty_option_chain" in body["tools"]
+
+
+def test_agent_tool_definitions() -> None:
+    response = client.get("/agent/tools")
+    assert response.status_code == 200
+    assert len(response.json()) >= 4
