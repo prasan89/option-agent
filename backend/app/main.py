@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 from app.api.agent import router as agent_router
+from app.api.dataset import router as dataset_router
 from app.api.flow import router as flow_router
 from app.api.groww import router as groww_router
 from app.api.intelligence import router as intelligence_router
@@ -8,16 +9,13 @@ from app.api.intelligence_score import router as intelligence_score_router
 from app.api.scanner import router as scanner_router
 from app.core.config import settings
 
-app = FastAPI(
-    title="AI Options Flow Agent API",
-    version=settings.app_version,
-    description="AI-assisted quantitative options-flow analysis platform.",
-)
+app = FastAPI(title="AI Options Flow Agent API", version=settings.app_version, description="AI-assisted quantitative options-flow analysis platform.")
 app.include_router(groww_router)
 app.include_router(flow_router)
 app.include_router(intelligence_router)
 app.include_router(intelligence_score_router)
 app.include_router(scanner_router)
+app.include_router(dataset_router)
 app.include_router(agent_router)
 
 
@@ -38,6 +36,7 @@ def system_status() -> dict[str, object]:
     from app.flow.engine import flow_engine
     from app.intelligence.fno_scanner import fno_scanner
     from app.intelligence.score_engine import intelligence_score_engine
+    from app.dataset.collector import historical_dataset_collector
     return {
         "status": "UP", "service": settings.app_name, "version": settings.app_version,
         "environment": settings.environment,
@@ -47,5 +46,6 @@ def system_status() -> dict[str, object]:
         "flow_intelligence": "READY",
         "fno_scanner": "RUNNING" if fno_scanner.running else "STOPPED",
         "intelligence_score_engine": "RUNNING" if intelligence_score_engine.running else "STOPPED",
+        "historical_dataset": "RUNNING" if historical_dataset_collector.running else "STOPPED",
         "ai_agent": "READY", "trading": "DISABLED",
     }
