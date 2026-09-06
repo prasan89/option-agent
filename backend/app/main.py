@@ -1,15 +1,17 @@
 from fastapi import FastAPI
 
 from app.api.agent import router as agent_router
+from app.api.flow import router as flow_router
 from app.api.groww import router as groww_router
 from app.core.config import settings
 
 app = FastAPI(
     title="AI Options Flow Agent API",
     version=settings.app_version,
-    description="AI-assisted options-flow research platform. Phase 1 is read-only market data.",
+    description="AI-assisted options-flow research platform. Phase 2 adds read-only flow inference.",
 )
 app.include_router(groww_router)
+app.include_router(flow_router)
 app.include_router(agent_router)
 
 
@@ -31,6 +33,7 @@ def version() -> dict[str, str]:
 def system_status() -> dict[str, object]:
     from app.services.groww_client import groww_client
     from app.services.groww_feed import feed_service
+    from app.flow.engine import flow_engine
 
     return {
         "status": "UP",
@@ -39,7 +42,7 @@ def system_status() -> dict[str, object]:
         "environment": settings.environment,
         "market_data": "CONFIGURED" if groww_client.configured else "NOT_CONFIGURED",
         "groww_feed": "RUNNING" if feed_service.running else "STOPPED",
-        "flow_engine": "NOT_STARTED",
+        "flow_engine": "RUNNING" if flow_engine.running else "STOPPED",
         "ai_agent": "READY",
         "trading": "DISABLED",
     }
