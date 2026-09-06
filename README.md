@@ -7,7 +7,6 @@ AI-assisted quantitative research and options-flow analysis platform for Indian 
 ## Phase 1 — Groww market data
 
 Implemented:
-
 - Groww Python SDK integration
 - Access-token or API-key/secret authentication
 - Read-only profile connectivity
@@ -20,7 +19,6 @@ Implemented:
 ## Phase 2 — Options-flow detection
 
 Implemented:
-
 - Redis-stream flow engine
 - LTP-vs-best-bid/ask aggression inference
 - Bid/ask depth imbalance
@@ -33,7 +31,6 @@ Implemented:
 ## Phase 3 — Flow intelligence and scoring
 
 Implemented:
-
 - Complete active NSE F&O instrument-master scanning, not NIFTY-only
 - One-minute F&O scanner cadence
 - Batched LTP collection
@@ -43,11 +40,19 @@ Implemented:
 - Confidence-weighted intelligence score from -100 to +100
 - BULLISH / BEARISH / NEUTRAL bias
 - Explainable evidence enrichment
-- `GET /scanner/latest` for the latest F&O activity ranking
-- `GET /intelligence-score/top` for highest-scoring flow signals
-- Start/stop/status APIs for scanner and intelligence engine
 
-Phase 3 remains research-only. The one-minute scanner establishes the market-wide candidate universe; the flow engine provides microstructure evidence; the intelligence score ranks signals for later backtesting and ML work.
+## Phase 4 — Historical data and learning dataset
+
+Implemented:
+- Historical observation collector consuming F&O rankings and intelligence signals
+- Normalized model-ready observation records
+- Timestamp, instrument metadata, LTP, one-minute movement, activity score, flow score, intelligence score, direction, bias, confidence and evidence fields
+- Explicit `UNLABELED` status to prevent future-information leakage
+- Redis Stream `dataset:observations` with 1,000,000-record retention target
+- Dataset status/start/stop APIs
+- Recent dataset inspection API
+
+Phase 4 is the data foundation for supervised learning. It does not claim predictive accuracy yet; outcome labels must be generated from future observations and evaluated with time-ordered validation.
 
 ## API endpoints
 
@@ -79,43 +84,36 @@ GET  /intelligence-score/status
 GET  /intelligence-score/top?limit=20
 POST /intelligence-score/start
 POST /intelligence-score/stop
+
+GET  /dataset/status
+GET  /dataset/recent?limit=25
+POST /dataset/start
+POST /dataset/stop
 ```
 
-## Phase 3 data flow
+## Phase 4 data flow
 
 ```text
-                 Groww F&O Instrument Master
-                           |
-                           v
-                  Complete NSE F&O Universe
-                           |
-                           v
-                    One-minute Scanner
-                           |
-                 +---------+---------+
-                 |                   |
-                 v                   v
-             LTP batches       fno:rankings
-                                     |
-Groww Live Feed                    ranking
-     |                               |
-     v                               |
- market:raw                          |
-     |                               |
-     v                               |
- Flow Engine                         |
-     |                               |
-     v                               |
- flow:signals -----------------------+
-                 |
-                 v
-        Intelligence Score Engine
-                 |
-                 v
-        intelligence:signals
-                 |
-                 v
-          Research / AI layer
+Groww
+  |
+  +--> market:raw --> Flow Engine --> flow:signals --+
+  |                                                   |
+  +--> F&O Scanner --> fno:rankings ------------------+
+                                                      |
+                                                      v
+                                           Historical Dataset Collector
+                                                      |
+                                                      v
+                                           dataset:observations
+                                                      |
+                                                      v
+                                           Future Outcome Labeling
+                                                      |
+                                                      v
+                                             ML Training Dataset
+                                                      |
+                                                      v
+                                         Time-series Validation / ML
 ```
 
 ## Local setup
@@ -129,21 +127,21 @@ docker compose up --build
 ```
 
 4. Open `http://localhost:8000/docs`.
-5. Start the feed, flow engine, F&O scanner and intelligence score engine from the API.
+5. Start the market feed, flow engine, scanner, intelligence score engine and dataset collector.
 
-## Important Groww limitation
+## Important limitation
 
-Groww's public feed provides LTP and aggregated market depth rather than an exchange-wide public tape identifying every market participant. Flow signals are therefore inference from observable market data, not direct institutional-order detection. Provider/API limits must be respected when scanning the complete F&O universe; the scanner uses batching and remains read-only.
+The dataset is only as good as the underlying market observations. Groww's public feed provides LTP and aggregated market depth rather than an exchange-wide public tape identifying every participant. Flow features are therefore inference, not direct institutional-order detection. Provider/API limits must be respected.
 
 ## Roadmap
 
 0. Foundation — complete
-1. Groww market-data connection + agent foundation — complete in code
+1. Groww market-data connection + agent foundation — complete
 2. Options-flow detection — complete
 2B. OI/volume/Greeks fusion — implemented for option-chain intelligence
-3. Flow intelligence and market-wide scoring — **complete**
-4. Historical data and learning dataset — next
-5. ML prediction
+3. Flow intelligence and market-wide scoring — complete
+4. Historical data and learning dataset — **complete**
+5. ML prediction — next
 6. AI strategy discovery
 7. Backtesting and walk-forward validation
 8. Paper trading
