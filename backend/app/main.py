@@ -37,7 +37,7 @@ def system_status() -> dict[str, object]:
         "service": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
-        "market_data": "CONNECTED" if groww_client.configured else "NOT_CONFIGURED",
+        "market_data": "CONFIGURED" if groww_client.configured else "NOT_CONFIGURED",
         "groww_feed": "RUNNING" if feed_service.running else "STOPPED",
         "flow_engine": "NOT_STARTED",
         "ai_agent": "READY",
