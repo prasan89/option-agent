@@ -44,76 +44,66 @@ Implemented:
 ## Phase 4 — Historical data and learning dataset
 
 Implemented:
-- Historical observation collector consuming F&O rankings and intelligence signals
+- Historical observation collector
 - Normalized model-ready observation records
-- Timestamp, instrument metadata, LTP, one-minute movement, activity score, flow score, intelligence score, direction, bias, confidence and evidence fields
 - Explicit `UNLABELED` status to prevent future-information leakage
-- Redis Stream `dataset:observations` with 1,000,000-record retention target
-- Dataset status/start/stop APIs
-- Recent dataset inspection API
+- Redis Stream `dataset:observations`
+- Dataset status/start/stop/recent APIs
 
-Phase 4 is the data foundation for supervised learning. It does not claim predictive accuracy yet; outcome labels must be generated from future observations and evaluated with time-ordered validation.
+## Phase 5 — ML prediction
+
+Implemented:
+- Forward outcome labeler for 1/5/15/30-minute horizons
+- Return and direction labels generated from future observations only
+- Baseline supervised classifier using flow and market features
+- Probability of UP/DOWN prediction
+- Explicit model readiness state
+- ML engine consuming historical observations
+- Training API and prediction API
+- ML status integrated into `/system/status`
+- `numpy` and `scikit-learn` dependencies
+
+The ML layer is intentionally research-only. It does not place orders and does not imply that a prediction is profitable. Training must use chronological, leakage-free datasets and should be followed by walk-forward validation before any trading decision.
 
 ## API endpoints
 
 ```text
-GET  /health
-GET  /version
-GET  /system/status
-
-GET  /groww/status
-GET  /groww/profile
-GET  /groww/option-chain?expiry_date=YYYY-MM-DD
-GET  /groww/ltp?exchange_symbols=NSE_SYMBOL
-GET  /groww/nifty/instruments?expiry_date=YYYY-MM-DD&strike_min=...
-POST /groww/feed/start
-
-GET  /flow/status
-POST /flow/start
-POST /flow/stop
-
-GET  /scanner/status
-GET  /scanner/latest?limit=25
-POST /scanner/start
-POST /scanner/stop
-
-GET  /intelligence/status
-POST /intelligence/start
-POST /intelligence/stop
-GET  /intelligence-score/status
-GET  /intelligence-score/top?limit=20
-POST /intelligence-score/start
-POST /intelligence-score/stop
-
-GET  /dataset/status
-GET  /dataset/recent?limit=25
-POST /dataset/start
-POST /dataset/stop
+GET  /ml/status
+GET  /ml/latest?limit=25
+POST /ml/start
+POST /ml/stop
+POST /ml/train
+POST /ml/predict
 ```
 
-## Phase 4 data flow
+## Phase 5 data flow
 
 ```text
-Groww
-  |
-  +--> market:raw --> Flow Engine --> flow:signals --+
-  |                                                   |
-  +--> F&O Scanner --> fno:rankings ------------------+
-                                                      |
-                                                      v
-                                           Historical Dataset Collector
-                                                      |
-                                                      v
-                                           dataset:observations
-                                                      |
-                                                      v
-                                           Future Outcome Labeling
-                                                      |
-                                                      v
-                                             ML Training Dataset
-                                                      |
-                                                      v
-                                         Time-series Validation / ML
+F&O Scanner + Flow Engine
+          |
+          v
+ dataset:observations
+          |
+          v
+ Future Outcome Labeler
+          |
+          +---- 1m return/direction
+          +---- 5m return/direction
+          +---- 15m return/direction
+          +---- 30m return/direction
+          |
+          v
+   dataset:labels
+          |
+          v
+ Baseline ML Predictor
+          |
+          +---- P(UP)
+          +---- P(DOWN)
+          +---- prediction
+          |
+          v
+ Research / validation
 ```
 
 ## Local setup
@@ -127,11 +117,11 @@ docker compose up --build
 ```
 
 4. Open `http://localhost:8000/docs`.
-5. Start the market feed, flow engine, scanner, intelligence score engine and dataset collector.
+5. Start the market feed, flow engine, scanner, intelligence score engine, dataset collector and ML engine.
 
 ## Important limitation
 
-The dataset is only as good as the underlying market observations. Groww's public feed provides LTP and aggregated market depth rather than an exchange-wide public tape identifying every participant. Flow features are therefore inference, not direct institutional-order detection. Provider/API limits must be respected.
+The model only learns from the observations supplied to it. Groww's public feed provides LTP and aggregated market depth rather than an exchange-wide public tape identifying every participant. Flow features are therefore inference, not direct institutional-order detection. Provider/API limits must be respected.
 
 ## Roadmap
 
@@ -140,9 +130,9 @@ The dataset is only as good as the underlying market observations. Groww's publi
 2. Options-flow detection — complete
 2B. OI/volume/Greeks fusion — implemented for option-chain intelligence
 3. Flow intelligence and market-wide scoring — complete
-4. Historical data and learning dataset — **complete**
-5. ML prediction — next
-6. AI strategy discovery
+4. Historical data and learning dataset — complete
+5. ML prediction — **complete**
+6. AI strategy discovery — next
 7. Backtesting and walk-forward validation
 8. Paper trading
 9. Risk management
