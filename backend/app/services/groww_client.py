@@ -13,10 +13,7 @@ class GrowwNotConfiguredError(RuntimeError):
 
 
 class GrowwClient:
-    """Read-only Groww market-data client for Phase 1.
-
-    Order placement is intentionally not exposed here. Phase 1 is data-only.
-    """
+    """Read-only Groww market-data client for the research phases."""
 
     def __init__(self) -> None:
         self._client: GrowwAPI | None = None
@@ -33,10 +30,7 @@ class GrowwClient:
             return self._client
         if not (settings.groww_api_key and settings.groww_api_secret):
             raise GrowwNotConfiguredError("Groww credentials are not configured")
-        token = GrowwAPI.get_access_token(
-            api_key=settings.groww_api_key,
-            secret=settings.groww_api_secret,
-        )
+        token = GrowwAPI.get_access_token(api_key=settings.groww_api_key, secret=settings.groww_api_secret)
         self._client = GrowwAPI(token)
         return self._client
 
@@ -66,6 +60,34 @@ class GrowwClient:
     def all_instruments(self) -> Any:
         return self._get_client().get_all_instruments()
 
+    def fno_instruments(self, active_only: bool = True) -> list[dict[str, Any]]:
+        """Return the complete NSE F&O instrument universe from the master.
+
+        This deliberately does not restrict the underlying to NIFTY. Expired
+        contracts are excluded when an expiry column is available.
+        """
+        df = self.all_instruments()
+        if df is None or len(df) == 0:
+            return []
+        df = df.copy()
+        if "exchange" in df.columns:
+            df = df[df["exchange"].astype(str).str.upper().isin({"NSE", "NSE_EQ", "NSE_FNO"})]
+        if "segment" in df.columns:
+            df = df[df["segment"].astype(str).str.upper() == "FNO"]
+        if active_only and "expiry_date" in df.columns:
+            expiry = df["expiry_date"].astype(str).str[:10]
+            df = df[(expiry == "") | (expiry == "nan") | (expiry >= date.today().isoformat())]
+
+        columns = [
+            "exchange", "exchange_token", "trading_symbol", "groww_symbol",
+            "underlying_symbol", "expiry_date", "strike_price", "instrument_type",
+            "lot_size", "tick_size", "segment",
+        ]
+        selected = [c for c in columns if c in df.columns]
+        if not selected:
+            selected = list(df.columns)
+        return df[selected].fillna("").to_dict(orient="records")
+
     def nifty_fno_instruments(
         self,
         expiry_date: date | None = None,
@@ -75,37 +97,20 @@ class GrowwClient:
         df = self.all_instruments()
         if df is None or len(df) == 0:
             return []
-
-        # Groww's instrument master is tabular. Normalize values so the
-        # filtering remains tolerant of CSV-vs-SDK dtype differences.
         df = df.copy()
         if "segment" in df.columns:
             df = df[df["segment"].astype(str).str.upper() == "FNO"]
         if "underlying_symbol" in df.columns:
             df = df[df["underlying_symbol"].astype(str).str.upper() == "NIFTY"]
         if expiry_date is not None and "expiry_date" in df.columns:
-            wanted = expiry_date.isoformat()
-            df = df[df["expiry_date"].astype(str).str[:10] == wanted]
+            df = df[df["expiry_date"].astype(str).str[:10] == expiry_date.isoformat()]
         if strike_min is not None and "strike_price" in df.columns:
             df = df[df["strike_price"].astype(float) >= strike_min]
         if strike_max is not None and "strike_price" in df.columns:
             df = df[df["strike_price"].astype(float) <= strike_max]
-
-        columns = [
-            "exchange",
-            "exchange_token",
-            "trading_symbol",
-            "groww_symbol",
-            "underlying_symbol",
-            "expiry_date",
-            "strike_price",
-            "instrument_type",
-            "lot_size",
-            "tick_size",
-        ]
-        selected = [column for column in columns if column in df.columns]
+        columns = ["exchange", "exchange_token", "trading_symbol", "groww_symbol", "underlying_symbol", "expiry_date", "strike_price", "instrument_type", "lot_size", "tick_size"]
+        selected = [c for c in columns if c in df.columns]
         return df[selected].fillna("").to_dict(orient="records")
 
 
-# Singleton used by API and feed components.
 groww_client = GrowwClient()
