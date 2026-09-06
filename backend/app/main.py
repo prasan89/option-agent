@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.agent import router as agent_router
 from app.api.groww import router as groww_router
 from app.core.config import settings
 
@@ -9,6 +10,7 @@ app = FastAPI(
     description="AI-assisted options-flow research platform. Phase 1 is read-only market data.",
 )
 app.include_router(groww_router)
+app.include_router(agent_router)
 
 
 @app.get("/health", tags=["system"])
@@ -27,8 +29,8 @@ def version() -> dict[str, str]:
 
 @app.get("/system/status", tags=["system"])
 def system_status() -> dict[str, object]:
-    from app.services.groww_feed import feed_service
     from app.services.groww_client import groww_client
+    from app.services.groww_feed import feed_service
 
     return {
         "status": "UP",
@@ -38,6 +40,6 @@ def system_status() -> dict[str, object]:
         "market_data": "CONNECTED" if groww_client.configured else "NOT_CONFIGURED",
         "groww_feed": "RUNNING" if feed_service.running else "STOPPED",
         "flow_engine": "NOT_STARTED",
-        "ai_agent": "NOT_STARTED",
+        "ai_agent": "READY",
         "trading": "DISABLED",
     }
