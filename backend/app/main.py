@@ -16,14 +16,12 @@ from app.api.signals import router as signals_router
 from app.api.strategy import router as strategy_router
 from app.api.strategy_dashboard import router as strategy_dashboard_router
 from app.core.config import settings
+from app.intelligence.historical_session import historical_session_analyzer
 from app.pipeline import research_pipeline
+from app.price_action.scanner import price_action_scanner
 from app.signals.monitor import signal_monitor
 
-app = FastAPI(
-    title="AI Options Flow Agent API",
-    version=settings.app_version,
-    description="AI-assisted quantitative options-flow analysis platform.",
-)
+app = FastAPI(title="AI Options Flow Agent API", version=settings.app_version, description="AI-assisted quantitative options-flow analysis platform.")
 
 app.include_router(groww_router)
 app.include_router(flow_router)
@@ -60,11 +58,7 @@ def health() -> dict[str, str]:
 
 @app.get("/version", tags=["system"])
 def version() -> dict[str, str]:
-    return {
-        "service": settings.app_name,
-        "version": settings.app_version,
-        "environment": settings.environment,
-    }
+    return {"service": settings.app_name, "version": settings.app_version, "environment": settings.environment}
 
 
 @app.get("/system/status", tags=["system"])
@@ -76,16 +70,8 @@ def system_status() -> dict[str, object]:
     from app.intelligence.score_engine import intelligence_score_engine
     from app.dataset.collector import historical_dataset_collector
     from app.ml.engine import ml_engine
-    from app.intelligence.historical_session import historical_session_analyzer
 
-    feed_status = (
-        "RUNNING"
-        if feed_service.running
-        else "STARTING"
-        if feed_service.starting
-        else "STOPPED"
-    )
-
+    feed_status = "RUNNING" if feed_service.running else "STARTING" if feed_service.starting else "STOPPED"
     return {
         "status": "UP",
         "service": settings.app_name,
@@ -96,6 +82,8 @@ def system_status() -> dict[str, object]:
         "flow_engine": "RUNNING" if flow_engine.running else "STOPPED",
         "flow_intelligence": "READY",
         "fno_scanner": "RUNNING" if fno_scanner.running else "STOPPED",
+        "price_action_scanner": "RUNNING" if price_action_scanner.running else "STOPPED",
+        "price_action": price_action_scanner.stats,
         "intelligence_score_engine": "RUNNING" if intelligence_score_engine.running else "STOPPED",
         "historical_dataset": "RUNNING" if historical_dataset_collector.running else "STOPPED",
         "ml_engine": "RUNNING" if ml_engine.running else "STOPPED",
