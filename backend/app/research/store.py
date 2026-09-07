@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any
 
 from app.core.config import settings
@@ -35,6 +34,7 @@ class ResearchStore:
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_dataset_symbol_ts ON dataset_observations(symbol, timestamp_ms)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_dataset_underlying_ts ON dataset_observations(underlying, timestamp_ms)")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS dataset_labels (
                     id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, timestamp_ms BIGINT NOT NULL,
@@ -48,6 +48,17 @@ class ResearchStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_labels_ts ON dataset_labels(timestamp_ms)")
             conn.commit()
 
+    @staticmethod
+    def _observation_values(row: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            row.get("timestamp_ms"), row.get("source", "unknown"), row.get("symbol", ""),
+            row.get("underlying"), row.get("instrument_type"), row.get("expiry_date"), row.get("strike_price"),
+            row.get("ltp"), row.get("change_pct_1m"), row.get("activity_score"), row.get("direction"),
+            row.get("flow_event"), row.get("flow_score"), row.get("intelligence_score"), row.get("confidence"),
+            row.get("bias"), row.get("price_change_pct"), row.get("depth_imbalance"), row.get("oi_change_pct"),
+            row.get("volume_change_pct"), json.dumps(row.get("evidence", [])),
+        )
+
     def insert_observation(self, row: dict[str, Any]) -> bool:
         with self.connect() as conn:
             cur = conn.execute("""
@@ -57,16 +68,27 @@ class ResearchStore:
                  confidence, bias, price_change_pct, depth_imbalance, oi_change_pct, volume_change_pct, evidence)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (symbol, timestamp_ms, source) DO NOTHING
-            """, (
-                row.get("timestamp_ms"), row.get("source", "unknown"), row.get("symbol", ""),
-                row.get("underlying"), row.get("instrument_type"), row.get("expiry_date"), row.get("strike_price"),
-                row.get("ltp"), row.get("change_pct_1m"), row.get("activity_score"), row.get("direction"),
-                row.get("flow_event"), row.get("flow_score"), row.get("intelligence_score"), row.get("confidence"),
-                row.get("bias"), row.get("price_change_pct"), row.get("depth_imbalance"), row.get("oi_change_pct"),
-                row.get("volume_change_pct"), json.dumps(row.get("evidence", [])),
-            ))
+            """, self._observation_values(row))
             conn.commit()
             return cur.rowcount > 0
+
+    def insert_observations(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        with self.connect() as conn:
+            inserted = 0
+            for row in rows:
+                cur = conn.execute("""
+                    INSERT INTO dataset_observations
+                    (timestamp_ms, source, symbol, underlying, instrument_type, expiry_date, strike_price, ltp,
+                     change_pct_1m, activity_score, direction, flow_event, flow_score, intelligence_score,
+                     confidence, bias, price_change_pct, depth_imbalance, oi_change_pct, volume_change_pct, evidence)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (symbol, timestamp_ms, source) DO NOTHING
+                """, self._observation_values(row))
+                inserted += max(0, cur.rowcount)
+            conn.commit()
+            return inserted
 
     def insert_label(self, label: dict[str, Any]) -> bool:
         with self.connect() as conn:
