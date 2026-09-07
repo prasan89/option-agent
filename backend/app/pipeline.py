@@ -64,14 +64,7 @@ class ResearchPipeline:
 
     @staticmethod
     def _feed_instruments() -> list[dict[str, str]]:
-        """Build a broad near-ATM option universe for the 1,000-instrument feed cap.
-
-        We deliberately avoid taking the first 1,000 rows of the instrument
-        master, which can heavily bias coverage toward alphabetical symbols.
-        Instead, each active underlying contributes a small near-the-money
-        slice from its nearest expiry. This gives the streaming scanner broad
-        cross-market coverage while staying within Groww's feed subscription cap.
-        """
+        """Build a broad near-ATM option universe for the 1,000-instrument feed cap."""
         rows = groww_client.fno_instruments(active_only=True)
         today = date.today().isoformat()
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -92,19 +85,24 @@ class ResearchPipeline:
             if not strikes:
                 continue
             center = strikes[len(strikes) // 2]
-            nearby = sorted(strikes, key=lambda strike: (abs(strike - center), strike))[: ResearchPipeline.FEED_STRIKES_PER_SIDE]
+            nearby = sorted(
+                strikes,
+                key=lambda strike: (abs(strike - center), strike),
+            )[: self.FEED_STRIKES_PER_SIDE]
             for strike in nearby:
                 for typ in ("CE", "PE"):
-                    matches = [r for r in nearest if float(r.get("strike_price") or 0) == strike and str(r.get("instrument_type") or "").upper() == typ]
+                    matches = [
+                        r for r in nearest
+                        if float(r.get("strike_price") or 0) == strike
+                        and str(r.get("instrument_type") or "").upper() == typ
+                    ]
                     if matches:
                         selected_rows.append(matches[0])
 
         if not selected_rows:
             raise RuntimeError("No active NSE option contracts available for Groww live feed")
 
-        # If the broad selection is below the feed cap, keep it. If it is over
-        # the cap, retain complete underlying slices until the cap is reached.
-        selected_rows = selected_rows[: ResearchPipeline.FEED_LIMIT]
+        selected_rows = selected_rows[: self.FEED_LIMIT]
         return [
             {
                 "exchange": "NSE",
@@ -126,15 +124,14 @@ class ResearchPipeline:
             started: list[Any] = []
 
             try:
+                # Consumers are started before the producer so streaming events
+                # are processed immediately after the feed connects.
                 if not flow_engine.running:
                     flow_engine.start()
                     started.append(flow_engine)
                 if not intelligence_score_engine.running:
                     intelligence_score_engine.start()
                     started.append(intelligence_score_engine)
-                if not fno_scanner.running:
-                    fno_scanner.start()
-                    started.append(fno_scanner)
                 if not historical_dataset_collector.running:
                     historical_dataset_collector.start()
                     started.append(historical_dataset_collector)
@@ -150,6 +147,13 @@ class ResearchPipeline:
                     feed_service.start(instruments)
                     self._feed_symbols = len(instruments)
                     started.append(feed_service)
+
+                # The feed service stores the subscription list synchronously,
+                # so the scanner can build its token metadata even while the
+                # SDK connection is still establishing in the background.
+                if not fno_scanner.running:
+                    fno_scanner.start()
+                    started.append(fno_scanner)
 
                 self._running = True
                 return self.stats
