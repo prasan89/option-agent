@@ -10,9 +10,9 @@ applications:
     health-check-http-endpoint: /health
     env:
       APP_NAME: option-agent
-      APP_VERSION: 0.3.1
+      APP_VERSION: 0.3.2
       ENVIRONMENT: btp
       LOG_LEVEL: INFO
-      # Pipeline stays off until Redis is bound. PostgreSQL can be discovered
-      # automatically from VCAP_SERVICES when a compatible service is bound.
-      AUTO_START_PIPELINE: false
+      # Redis is not required. PostgreSQL is discovered automatically from
+      # the Cloud Foundry VCAP_SERVICES binding.
+      AUTO_START_PIPELINE: true
