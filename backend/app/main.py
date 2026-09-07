@@ -1,14 +1,17 @@
 from fastapi import FastAPI
 
 from app.api.agent import router as agent_router
+from app.api.dashboard import router as dashboard_router
 from app.api.dataset import router as dataset_router
 from app.api.flow import router as flow_router
 from app.api.groww import router as groww_router
 from app.api.intelligence import router as intelligence_router
 from app.api.intelligence_score import router as intelligence_score_router
-from app.api.scanner import router as scanner_router
 from app.api.ml import router as ml_router
+from app.api.scanner import router as scanner_router
+from app.api.signals import router as signals_router
 from app.core.config import settings
+from app.signals.monitor import signal_monitor
 
 app = FastAPI(title="AI Options Flow Agent API", version=settings.app_version, description="AI-assisted quantitative options-flow analysis platform.")
 app.include_router(groww_router)
@@ -18,7 +21,23 @@ app.include_router(intelligence_score_router)
 app.include_router(scanner_router)
 app.include_router(dataset_router)
 app.include_router(ml_router)
+app.include_router(signals_router)
+app.include_router(dashboard_router)
 app.include_router(agent_router)
+
+
+@app.on_event("startup")
+def startup() -> None:
+    try:
+        signal_monitor.start()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Signal monitor could not start")
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    signal_monitor.stop()
 
 
 @app.get("/health", tags=["system"])
@@ -52,5 +71,8 @@ def system_status() -> dict[str, object]:
         "historical_dataset": "RUNNING" if historical_dataset_collector.running else "STOPPED",
         "ml_engine": "RUNNING" if ml_engine.running else "STOPPED",
         "model_ready": ml_engine.stats["model_ready"],
+        "signal_monitor": "RUNNING" if signal_monitor.running else "STOPPED",
+        "persisted_signals": signal_monitor.stats["persisted_signals"],
         "ai_agent": "READY", "trading": "DISABLED",
     }
+}
