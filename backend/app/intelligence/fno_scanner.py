@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 
 class FNOScanner:
     """Read-only one-minute scanner for the near-term NSE F&O universe."""
-
     INTERVAL_SECONDS = 60
     BATCH_SIZE = 50
     MAX_DIAGNOSTIC_REQUESTS = 40
@@ -32,6 +31,7 @@ class FNOScanner:
         self._checks = 0
         self._symbols_scanned = 0
         self._symbols_available = 0
+        self._unique_underlyings = 0
         self._quotes_received = 0
         self._successful_batches = 0
         self._failed_batches = 0
@@ -58,13 +58,13 @@ class FNOScanner:
                 "ranking_ready": self._checks >= 2,
                 "symbols_available_last_check": self._symbols_available,
                 "symbols_scanned_last_check": self._symbols_scanned,
+                "unique_underlyings_last_check": self._unique_underlyings,
                 "quotes_received_last_check": self._quotes_received,
                 "successful_batches_last_check": self._successful_batches,
                 "failed_batches_last_check": self._failed_batches,
                 "invalid_symbols_last_check": self._invalid_symbols,
                 "invalid_symbols_cached": len(self._invalid_cache),
                 "diagnostic_requests_last_check": self._diagnostic_requests,
-                "unique_underlyings_last_check": len({str(x.get("underlying") or "") for x in self._latest if x.get("underlying")}),
                 "errors": self._errors,
                 "last_scan_timestamp": self._last_timestamp,
                 "top_underlyings": self._latest_underlyings[: self.MAX_UNDERLYING_RESULTS],
@@ -136,7 +136,6 @@ class FNOScanner:
 
     @staticmethod
     def _contract_score(change: float | None) -> float:
-        """Price-only score until depth/volume/OI are available for the full universe."""
         return round(min(100.0, abs(change or 0.0) * 20.0), 2)
 
     @classmethod
@@ -167,9 +166,11 @@ class FNOScanner:
                 "contracts_up": up,
                 "contracts_down": down,
                 "max_change_pct": round(float(top[0].get("change_pct_since_last_scan") or 0), 4),
-                "top_contracts": [
-                    {"symbol": r["symbol"], "change_pct": r["change_pct_since_last_scan"], "instrument_type": r.get("instrument_type"), "expiry_date": r.get("expiry_date"), "strike_price": r.get("strike_price"), "ltp": r.get("ltp"), "activity_score": r.get("activity_score")} for r in top
-                ],
+                "top_contracts": [{
+                    "symbol": r["symbol"], "change_pct": r["change_pct_since_last_scan"],
+                    "instrument_type": r.get("instrument_type"), "expiry_date": r.get("expiry_date"),
+                    "strike_price": r.get("strike_price"), "ltp": r.get("ltp"), "activity_score": r.get("activity_score"),
+                } for r in top],
                 "data_sources": ["LTP"],
                 "data_completeness": "PRICE_ONLY",
             })
@@ -241,15 +242,15 @@ class FNOScanner:
         ranking_ready = self._checks >= 1
         if ranking_ready:
             rankings.sort(key=lambda x: (x["activity_score"], abs(x["change_pct_since_last_scan"] or 0)), reverse=True)
-        else:
-            rankings = []
         underlying_rankings = self._aggregate_underlyings(rankings if ranking_ready else [])
-        top_contracts = rankings[: self.MAX_RESULTS]
+        top_contracts = rankings[: self.MAX_RESULTS] if ranking_ready else []
+        unique_underlyings = len({str(r.get("underlying") or "").strip() for r in rankings if r.get("underlying")})
 
         with self._lock:
             check = self._checks + 1
             self._symbols_available = len(metas)
             self._symbols_scanned = scanned
+            self._unique_underlyings = unique_underlyings
             self._quotes_received = quotes_received
             self._successful_batches = successful_batches
             self._failed_batches = failed_batches
@@ -271,7 +272,7 @@ class FNOScanner:
             "successful_batches": successful_batches,
             "failed_batches": failed_batches,
             "invalid_symbols": invalid_symbols,
-            "unique_underlyings": len({str(r.get("underlying") or "") for r in rankings if r.get("underlying")}),
+            "unique_underlyings": unique_underlyings,
             "observations": rankings,
             "rankings": top_contracts,
             "underlying_rankings": underlying_rankings,
