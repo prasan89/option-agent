@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
+from datetime import datetime
 from typing import Any
 
 import redis
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class FlowEngine:
-    """Consumes Phase-1 market observations and publishes explainable flow signals."""
+    """Consumes raw market observations and publishes explainable flow signals."""
 
     INPUT_STREAM = "market:raw"
     OUTPUT_STREAM = "flow:signals"
@@ -70,6 +70,16 @@ class FlowEngine:
         ask_qty = sum(float(v.get("qty", 0)) for v in asks)
         return best_bid, best_ask, bid_qty, ask_qty
 
+    @staticmethod
+    def _event_timestamp_ms(event: dict[str, Any]) -> int:
+        received_at = str(event.get("received_at") or "")
+        if received_at:
+            try:
+                return int(datetime.fromisoformat(received_at.replace("Z", "+00:00")).timestamp() * 1000)
+            except ValueError:
+                pass
+        return 0
+
     def _process(self, raw: str) -> None:
         event = json.loads(raw)
         meta = event.get("meta", {})
@@ -86,13 +96,14 @@ class FlowEngine:
             state["best_bid"], state["best_ask"], state["bid_qty"], state["ask_qty"] = self._extract_depth(payload, token)
         else:
             return
+        state["timestamp_ms"] = self._event_timestamp_ms(event) or state.get("timestamp_ms", 0)
 
         if state.get("ltp") is None or state.get("best_bid") is None or state.get("best_ask") is None:
             return
 
         snapshot = MarketSnapshot(
             token=token,
-            timestamp_ms=int(time.time() * 1000),
+            timestamp_ms=int(state.get("timestamp_ms") or 0),
             ltp=state["ltp"],
             best_bid=state["best_bid"],
             best_ask=state["best_ask"],
