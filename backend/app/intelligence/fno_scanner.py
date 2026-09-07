@@ -17,6 +17,7 @@ class FNOScanner:
 
     INTERVAL_SECONDS = 60
     BATCH_SIZE = 50
+    MAX_DIAGNOSTIC_REQUESTS = 40
     OUTPUT_TOPIC = "fno.rankings"
     MAX_RESULTS = 100
 
@@ -32,6 +33,7 @@ class FNOScanner:
         self._failed_batches = 0
         self._invalid_symbols = 0
         self._errors = 0
+        self._diagnostic_requests = 0
         self._previous: dict[str, float] = {}
         self._invalid_cache: set[str] = set()
         self._lock = threading.Lock()
@@ -54,6 +56,7 @@ class FNOScanner:
                 "failed_batches_last_check": self._failed_batches,
                 "invalid_symbols_last_check": self._invalid_symbols,
                 "invalid_symbols_cached": len(self._invalid_cache),
+                "diagnostic_requests_last_check": self._diagnostic_requests,
                 "errors": self._errors,
                 "latest_rankings": self._latest[:self.MAX_RESULTS],
             }
@@ -77,8 +80,8 @@ class FNOScanner:
     def _is_bad_request(exc: Exception) -> bool:
         return "Groww LTP HTTP 400" in str(exc)
 
-    def _fetch_batch(self, batch: list[str]) -> tuple[dict[str, Any], int, bool]:
-        """Fetch LTPs and isolate only symbols rejected by Groww with HTTP 400."""
+    def _fetch_batch(self, batch: list[str], diagnostic_budget: list[int]) -> tuple[dict[str, Any], int, bool]:
+        """Fetch LTPs without unbounded recursive splitting on a bad request."""
         if not batch:
             return {}, 0, True
 
@@ -94,24 +97,32 @@ class FNOScanner:
                 )
                 return {}, 0, False
 
-            logger.warning(
-                "Groww F&O LTP batch rejected; batch_size=%d sample=%s",
-                len(batch),
-                ", ".join(batch[:3]),
-            )
+            if len(batch) == 1:
+                symbol = batch[0]
+                with self._lock:
+                    self._invalid_cache.add(symbol)
+                logger.warning("Caching rejected Groww F&O symbol=%s", symbol)
+                return {}, 1, False
 
-        if len(batch) == 1:
-            symbol = batch[0]
-            with self._lock:
-                self._invalid_cache.add(symbol)
-            logger.warning("Caching rejected Groww F&O symbol=%s", symbol)
-            return {}, 1, False
+            if diagnostic_budget[0] <= 0:
+                logger.warning(
+                    "Groww F&O LTP batch rejected; diagnostic budget exhausted; batch_size=%d sample=%s",
+                    len(batch),
+                    ", ".join(batch[:3]),
+                )
+                return {}, 0, False
 
-        midpoint = len(batch) // 2
-        left_quotes, left_invalid, left_ok = self._fetch_batch(batch[:midpoint])
-        right_quotes, right_invalid, right_ok = self._fetch_batch(batch[midpoint:])
-        left_quotes.update(right_quotes)
-        return left_quotes, left_invalid + right_invalid, left_ok or right_ok
+            midpoint = len(batch) // 2
+            diagnostic_budget[0] -= 1
+            left_quotes, left_invalid, left_ok = self._fetch_batch(batch[:midpoint], diagnostic_budget)
+            if diagnostic_budget[0] <= 0:
+                right_quotes, right_invalid, right_ok = {}, 0, False
+            else:
+                diagnostic_budget[0] -= 1
+                right_quotes, right_invalid, right_ok = self._fetch_batch(batch[midpoint:], diagnostic_budget)
+
+            left_quotes.update(right_quotes)
+            return left_quotes, left_invalid + right_invalid, left_ok or right_ok
 
     def _scan_once(self) -> None:
         instruments = groww_client.fno_instruments(active_only=True)
@@ -129,10 +140,11 @@ class FNOScanner:
         successful_batches = 0
         failed_batches = 0
         invalid_symbols = 0
+        diagnostic_budget = [self.MAX_DIAGNOSTIC_REQUESTS]
 
         for start in range(0, len(symbols), self.BATCH_SIZE):
             batch = symbols[start : start + self.BATCH_SIZE]
-            quotes, invalid, ok = self._fetch_batch(batch)
+            quotes, invalid, ok = self._fetch_batch(batch, diagnostic_budget)
             scanned += len(batch)
             invalid_symbols += invalid
             if quotes:
@@ -186,9 +198,17 @@ class FNOScanner:
             self._successful_batches = successful_batches
             self._failed_batches = failed_batches
             self._invalid_symbols = invalid_symbols
+            self._diagnostic_requests = self.MAX_DIAGNOSTIC_REQUESTS - diagnostic_budget[0]
             self._latest = rankings
             self._checks += 1
             self._errors += invalid_symbols
+
+        if diagnostic_budget[0] < self.MAX_DIAGNOSTIC_REQUESTS:
+            logger.warning(
+                "Groww F&O LTP diagnostics used %d extra requests; invalid_cached=%d",
+                self.MAX_DIAGNOSTIC_REQUESTS - diagnostic_budget[0],
+                len(self._invalid_cache),
+            )
 
         research_event_bus.publish(
             self.OUTPUT_TOPIC,
