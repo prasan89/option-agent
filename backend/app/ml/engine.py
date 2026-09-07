@@ -21,11 +21,13 @@ class MLEngine:
     LABEL_TOPIC = "dataset.labels"
     LABEL_HORIZON_MINUTES = 5
     MAX_HISTORY = 50_000
+    MAX_SEEN_KEYS = 200_000
 
     def __init__(self) -> None:
         self._running = False
         self._latest: dict[str, dict[str, Any]] = {}
         self._seen: set[tuple[str, int, str]] = set()
+        self._seen_order: deque[tuple[str, int, str]] = deque(maxlen=self.MAX_SEEN_KEYS)
         self._history = deque(maxlen=self.MAX_HISTORY)
         self._labeler = OutcomeLabeler()
         self._observations = 0
@@ -96,7 +98,11 @@ class MLEngine:
         key = (symbol, ts, source)
         if key in self._seen:
             return
+        if len(self._seen_order) == self.MAX_SEEN_KEYS:
+            old = self._seen_order[0]
+            self._seen.discard(old)
         self._seen.add(key)
+        self._seen_order.append(key)
         self._history.append(row)
         self._latest[symbol] = row
         labels = self._labeler.observe(symbol, ts, price, self._features(row))
