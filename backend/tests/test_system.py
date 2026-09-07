@@ -19,7 +19,7 @@ def test_version() -> None:
     response = client.get("/version")
     assert response.status_code == 200
     assert response.json()["service"] == "option-agent"
-    assert response.json()["version"] == "0.5.2"
+    assert response.json()["version"] == "0.5.3"
 
 
 def test_system_status_keeps_trading_disabled() -> None:
@@ -27,12 +27,25 @@ def test_system_status_keeps_trading_disabled() -> None:
     assert response.status_code == 200
     assert response.json()["trading"] == "DISABLED"
     assert response.json()["ai_agent"] == "READY"
+    assert "price_action_scanner" in response.json()
 
 
 def test_strategy_routes_are_registered() -> None:
     dashboard = client.get("/strategy")
     assert dashboard.status_code == 200
     assert "SLO Options Research" in dashboard.text
+
+
+def test_price_action_routes_are_registered() -> None:
+    dashboard = client.get("/price-action")
+    assert dashboard.status_code == 200
+    assert "SLO Price Action" in dashboard.text
+    response = client.get("/price-action/status")
+    assert response.status_code == 200
+    assert response.json()["trading"] == "DISABLED"
+    results = client.get("/price-action/results")
+    assert results.status_code == 200
+    assert results.json()["method"] == "SLO_PRICE_ACTION_LIVE_GROWW"
 
 
 def test_dashboard_routes_are_registered() -> None:
