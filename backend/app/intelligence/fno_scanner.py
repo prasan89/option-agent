@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class FNOScanner:
-    """Read-only one-minute scanner and activity ranker for NSE F&O."""
+    """Read-only one-minute scanner and activity ranker for the complete NSE F&O universe."""
 
     INTERVAL_SECONDS = 60
     BATCH_SIZE = 50
@@ -29,6 +29,7 @@ class FNOScanner:
         self._latest: list[dict[str, Any]] = []
         self._checks = 0
         self._symbols_scanned = 0
+        self._symbols_available = 0
         self._errors = 0
         self._previous: dict[str, float] = {}
         self._lock = threading.Lock()
@@ -45,6 +46,7 @@ class FNOScanner:
                 "running": self.running,
                 "interval_seconds": self.INTERVAL_SECONDS,
                 "checks": self._checks,
+                "symbols_available_last_check": self._symbols_available,
                 "symbols_scanned_last_check": self._symbols_scanned,
                 "errors": self._errors,
                 "latest_rankings": self._latest[:self.MAX_RESULTS],
@@ -63,7 +65,8 @@ class FNOScanner:
 
     @staticmethod
     def _symbol(meta: dict[str, Any]) -> str:
-        # Use canonical trading_symbol. GrowwClient adds the NSE_ prefix.
+        # Use the canonical exchange trading symbol. GrowwClient.ltp adds the
+        # NSE_ prefix required by Groww's live-data API.
         return str(meta.get("trading_symbol") or "").strip()
 
     def _scan_once(self) -> None:
@@ -85,22 +88,33 @@ class FNOScanner:
             try:
                 quotes = groww_client.ltp(batch) or {}
                 scanned += len(batch)
-                for symbol, raw in quotes.items():
+                for returned_symbol, raw in quotes.items():
+                    # Groww returns the normalized NSE_ symbol; map it back to
+                    # the canonical trading symbol used by our instrument master.
+                    symbol = str(returned_symbol)
+                    canonical = symbol[4:] if symbol.startswith("NSE_") else symbol
+                    meta = metas.get(canonical)
+                    if meta is None:
+                        continue
                     price = self._ltp(raw)
                     if price is None or price <= 0:
                         continue
-                    previous = self._previous.get(symbol)
+                    previous = self._previous.get(canonical)
                     change_pct = None if previous in (None, 0) else (price - previous) / abs(previous) * 100
                     rankings.append({
-                        "symbol": symbol,
-                        "underlying": metas.get(symbol, {}).get("underlying_symbol"),
-                        "instrument_type": metas.get(symbol, {}).get("instrument_type"),
-                        "expiry_date": metas.get(symbol, {}).get("expiry_date"),
-                        "strike_price": metas.get(symbol, {}).get("strike_price"),
+                        "symbol": canonical,
+                        "groww_exchange_symbol": symbol,
+                        "underlying": meta.get("underlying_symbol"),
+                        "exchange": meta.get("exchange", "NSE"),
+                        "instrument_type": meta.get("instrument_type"),
+                        "expiry_date": meta.get("expiry_date"),
+                        "strike_price": meta.get("strike_price"),
+                        "exchange_token": meta.get("exchange_token"),
+                        "lot_size": meta.get("lot_size"),
                         "ltp": round(price, 4),
                         "change_pct_since_last_scan": None if change_pct is None else round(change_pct, 4),
                     })
-                    self._previous[symbol] = price
+                    self._previous[canonical] = price
             except Exception:
                 self._errors += 1
                 logger.exception("F&O LTP batch failed")
@@ -112,19 +126,21 @@ class FNOScanner:
         rankings.sort(key=lambda x: (x["activity_score"], abs(x["change_pct_since_last_scan"] or 0)), reverse=True)
         rankings = rankings[:self.MAX_RESULTS]
 
+        with self._lock:
+            check = self._checks + 1
+            self._symbols_available = len(symbols)
+            self._symbols_scanned = scanned
+            self._latest = rankings
+            self._checks += 1
+
         payload = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "check": self._checks + 1,
+            "check": check,
             "symbols_available": len(symbols),
             "symbols_scanned": scanned,
             "rankings": rankings,
         }
         self._redis.xadd(self.OUTPUT_STREAM, {"scan": json.dumps(payload, separators=(",", ":"))}, maxlen=100_000, approximate=True)
-
-        with self._lock:
-            self._symbols_scanned = scanned
-            self._latest = rankings
-            self._checks += 1
 
     def _run(self) -> None:
         while self._running:
