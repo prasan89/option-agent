@@ -62,8 +62,8 @@ class ResearchPipeline:
             "trading": "DISABLED",
         }
 
-    @staticmethod
-    def _feed_instruments() -> list[dict[str, str]]:
+    @classmethod
+    def _feed_instruments(cls) -> list[dict[str, str]]:
         """Build a broad near-ATM option universe for the 1,000-instrument feed cap."""
         rows = groww_client.fno_instruments(active_only=True)
         today = date.today().isoformat()
@@ -88,7 +88,7 @@ class ResearchPipeline:
             nearby = sorted(
                 strikes,
                 key=lambda strike: (abs(strike - center), strike),
-            )[: self.FEED_STRIKES_PER_SIDE]
+            )[: cls.FEED_STRIKES_PER_SIDE]
             for strike in nearby:
                 for typ in ("CE", "PE"):
                     matches = [
@@ -102,7 +102,7 @@ class ResearchPipeline:
         if not selected_rows:
             raise RuntimeError("No active NSE option contracts available for Groww live feed")
 
-        selected_rows = selected_rows[: self.FEED_LIMIT]
+        selected_rows = selected_rows[: cls.FEED_LIMIT]
         return [
             {
                 "exchange": "NSE",
@@ -148,9 +148,6 @@ class ResearchPipeline:
                     self._feed_symbols = len(instruments)
                     started.append(feed_service)
 
-                # The feed service stores the subscription list synchronously,
-                # so the scanner can build its token metadata even while the
-                # SDK connection is still establishing in the background.
                 if not fno_scanner.running:
                     fno_scanner.start()
                     started.append(fno_scanner)
