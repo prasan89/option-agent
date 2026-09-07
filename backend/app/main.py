@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.agent import router as agent_router
 from app.api.dashboard import router as dashboard_router
+from app.api.dashboard_v3 import router as dashboard_v3_router
 from app.api.dataset import router as dataset_router
 from app.api.flow import router as flow_router
 from app.api.groww import router as groww_router
@@ -33,6 +34,10 @@ app.include_router(ml_router)
 app.include_router(signals_router)
 app.include_router(strategy_router)
 app.include_router(pipeline_router)
+# Register the post-market aware dashboard first. FastAPI evaluates path
+# operations in declaration order, so this intentionally supersedes the
+# legacy dashboard implementation without removing its drill-down routes.
+app.include_router(dashboard_v3_router)
 app.include_router(dashboard_router)
 app.include_router(strategy_dashboard_router)
 app.include_router(agent_router)
@@ -72,6 +77,7 @@ def system_status() -> dict[str, object]:
     from app.intelligence.score_engine import intelligence_score_engine
     from app.dataset.collector import historical_dataset_collector
     from app.ml.engine import ml_engine
+    from app.intelligence.historical_session import historical_session_analyzer
 
     feed_status = (
         "RUNNING"
@@ -97,6 +103,7 @@ def system_status() -> dict[str, object]:
         "model_ready": ml_engine.stats["model_ready"],
         "signal_monitor": "RUNNING" if signal_monitor.running else "STOPPED",
         "persisted_signals": signal_monitor.stats["persisted_signals"],
+        "historical_session": historical_session_analyzer.stats,
         "pipeline": research_pipeline.stats,
         "ai_agent": "READY",
         "trading": "DISABLED",
