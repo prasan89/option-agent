@@ -63,10 +63,10 @@ class FNOScanner:
 
     @staticmethod
     def _symbol(meta: dict[str, Any]) -> str:
-        return str(meta.get("groww_symbol") or meta.get("trading_symbol") or "").strip()
+        # Use canonical trading_symbol. GrowwClient adds the NSE_ prefix.
+        return str(meta.get("trading_symbol") or "").strip()
 
     def _scan_once(self) -> None:
-        # Phase 3 scans the complete F&O master, not NIFTY only.
         instruments = groww_client.fno_instruments(active_only=True)
         if not instruments:
             raise RuntimeError("Groww NSE F&O instrument master returned no active instruments")
@@ -105,8 +105,6 @@ class FNOScanner:
                 self._errors += 1
                 logger.exception("F&O LTP batch failed")
 
-        # Rank by absolute one-minute price movement. The first run is a
-        # baseline; later runs provide the actionable activity ranking.
         for row in rankings:
             change = row["change_pct_since_last_scan"]
             row["activity_score"] = round(min(100.0, abs(change or 0.0) * 20.0), 2)
