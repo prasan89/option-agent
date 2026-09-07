@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any, Callable
 
 from app.flow.intelligence import FlowIntelligence
+from app.services.groww_client import groww_client
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +47,21 @@ class IntelligenceScheduler:
 
     @staticmethod
     def _next_expiry() -> date:
-        # The API layer can later replace this with the exact nearest listed expiry.
-        # Keep scheduling independent of trading/execution.
-        return date.today()
+        """Resolve the nearest active NIFTY option expiry from the instrument master."""
+        rows = groww_client.nifty_fno_instruments()
+        today = date.today()
+        expiries: list[date] = []
+        for row in rows:
+            value = str(row.get("expiry_date") or "")[:10]
+            try:
+                expiry = date.fromisoformat(value)
+            except ValueError:
+                continue
+            if expiry >= today:
+                expiries.append(expiry)
+        if not expiries:
+            raise RuntimeError("No active NIFTY option expiry available")
+        return min(expiries)
 
     def _run_once(self) -> None:
         expiry = self._next_expiry()
@@ -82,5 +95,4 @@ class IntelligenceScheduler:
         self._running = False
 
 
-# Created by the API layer so Groww credentials are resolved at runtime.
 scheduler: IntelligenceScheduler | None = None
