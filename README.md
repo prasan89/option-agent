@@ -65,45 +65,74 @@ Implemented:
 
 The ML layer is intentionally research-only. It does not place orders and does not imply that a prediction is profitable. Training must use chronological, leakage-free datasets and should be followed by walk-forward validation before any trading decision.
 
+## Phase 6 — Autonomous signal dashboard
+
+Implemented:
+- PostgreSQL signal persistence
+- Five-minute signal monitor
+- Duplicate-safe signal keys
+- Automatic startup of the complete research pipeline
+- Active nearest-expiry NIFTY option feed selection, capped at Groww's 1,000-instrument subscription limit
+- Pipeline status API at `/pipeline/status`
+- Manual pipeline controls at `/pipeline/start` and `/pipeline/stop`
+- Research dashboard at `/dashboard`
+- Dashboard auto-refresh and persisted signal history
+- Database availability and pipeline-stage visibility
+- Trading remains disabled
+
+## Data flow
+
+```text
+Groww live feed
+      |
+      v
+ market:raw
+      |
+      v
+ Flow Engine
+      |
+      v
+ flow:signals
+      |
+      v
+ Intelligence Score
+      |
+      v
+ intelligence:signals
+      |
+      +--------------------+
+      |                    |
+      v                    v
+Dataset Collector     5-min Signal Monitor
+      |                    |
+      v                    v
+ML / labels          PostgreSQL
+                           |
+                           v
+                       Dashboard
+```
+
 ## API endpoints
 
 ```text
+GET  /health
+GET  /version
+GET  /system/status
+GET  /pipeline/status
+POST /pipeline/start
+POST /pipeline/stop
+GET  /dashboard
+GET  /signals
+GET  /signals/status
+POST /signals/start
+POST /signals/stop
+POST /signals/run-once
 GET  /ml/status
 GET  /ml/latest?limit=25
 POST /ml/start
 POST /ml/stop
 POST /ml/train
 POST /ml/predict
-```
-
-## Phase 5 data flow
-
-```text
-F&O Scanner + Flow Engine
-          |
-          v
- dataset:observations
-          |
-          v
- Future Outcome Labeler
-          |
-          +---- 1m return/direction
-          +---- 5m return/direction
-          +---- 15m return/direction
-          +---- 30m return/direction
-          |
-          v
-   dataset:labels
-          |
-          v
- Baseline ML Predictor
-          |
-          +---- P(UP)
-          +---- P(DOWN)
-          +---- prediction
-          |
-          v
- Research / validation
 ```
 
 ## Local setup
@@ -116,12 +145,38 @@ F&O Scanner + Flow Engine
 docker compose up --build
 ```
 
-4. Open `http://localhost:8000/docs`.
-5. Start the market feed, flow engine, scanner, intelligence score engine, dataset collector and ML engine.
+4. Open `http://localhost:8000/dashboard`.
+5. The local configuration starts the research pipeline automatically.
 
-## Important limitation
+## BTP deployment
 
-The model only learns from the observations supplied to it. Groww's public feed provides LTP and aggregated market depth rather than an exchange-wide public tape identifying every participant. Flow features are therefore inference, not direct institutional-order detection. Provider/API limits must be respected.
+The Cloud Foundry app requires reachable Redis and PostgreSQL services. Do not put credentials in Git or in this README. Configure them as Cloud Foundry environment variables:
+
+```bash
+cf set-env option-agent-api DATABASE_URL '<POSTGRES_CONNECTION_STRING>'
+cf set-env option-agent-api REDIS_URL '<REDIS_CONNECTION_STRING>'
+cf set-env option-agent-api AUTO_START_PIPELINE true
+cf restart option-agent-api
+```
+
+Verify the application and pipeline:
+
+```bash
+cf logs option-agent-api --recent
+curl https://<APP_ROUTE>/health
+curl https://<APP_ROUTE>/system/status
+curl https://<APP_ROUTE>/pipeline/status
+```
+
+Then open `/dashboard` on the application route.
+
+## Important limitations
+
+Groww's public feed provides LTP and aggregated market depth rather than an exchange-wide public tape identifying every participant. Flow features are therefore inference, not direct institutional-order detection. Provider/API limits must be respected.
+
+The signal threshold is currently an absolute intelligence score of 60 with non-LOW confidence. Persisted signals are research observations, not trade recommendations.
+
+The application intentionally keeps order placement disabled. Paper trading, risk controls, backtesting and walk-forward validation must be completed before considering any execution integration.
 
 ## Roadmap
 
@@ -131,11 +186,12 @@ The model only learns from the observations supplied to it. Groww's public feed 
 2B. OI/volume/Greeks fusion — implemented for option-chain intelligence
 3. Flow intelligence and market-wide scoring — complete
 4. Historical data and learning dataset — complete
-5. ML prediction — **complete**
-6. AI strategy discovery — next
-7. Backtesting and walk-forward validation
-8. Paper trading
-9. Risk management
-10. Broker execution
-11. Controlled live trading
-12. Autonomous research and optimization
+5. ML prediction — complete
+6. Autonomous signal dashboard — complete
+7. AI strategy discovery
+8. Backtesting and walk-forward validation
+9. Paper trading
+10. Risk management
+11. Broker execution
+12. Controlled live trading
+13. Autonomous research and optimization
