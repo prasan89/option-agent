@@ -39,24 +39,26 @@ class GrowwClient:
 
     @staticmethod
     def _normalize_ltp_symbol(symbol: str) -> str:
-        """Normalize an NSE F&O trading symbol for Groww's LTP API.
-
-        Groww's live LTP endpoint expects exchange-prefixed symbols such as
-        ``NSE_NIFTY26NOV19250CE``. The instrument master exposes the bare
-        ``trading_symbol`` (``NIFTY26NOV19250CE``), so callers can use either
-        form and this client keeps the API-specific formatting in one place.
-        """
         value = str(symbol).strip()
         if not value:
             return value
-        if value.startswith("NSE_"):
-            return value
-        return f"NSE_{value}"
+        return value if value.startswith("NSE_") else f"NSE_{value}"
 
     def ltp(self, exchange_symbols: list[str]) -> dict[str, Any]:
-        normalized = [self._normalize_ltp_symbol(symbol) for symbol in exchange_symbols]
+        """Fetch F&O LTPs, rejecting empty/oversized requests locally."""
+        normalized = []
+        seen: set[str] = set()
+        for symbol in exchange_symbols:
+            value = self._normalize_ltp_symbol(symbol)
+            if value and value not in seen:
+                normalized.append(value)
+                seen.add(value)
+        if not normalized:
+            return {}
+        if len(normalized) > 50:
+            raise ValueError("Groww LTP supports at most 50 instruments per request")
         return self._get_client().get_ltp(
-            exchange_trading_symbols=normalized,
+            exchange_trading_symbols=tuple(normalized),
             segment=GrowwAPI.SEGMENT_FNO,
         )
 
@@ -78,23 +80,17 @@ class GrowwClient:
         return self._get_client().get_all_instruments()
 
     def fno_instruments(self, active_only: bool = True) -> list[dict[str, Any]]:
-        """Return the complete NSE F&O instrument universe from the master.
-
-        This deliberately does not restrict the underlying to NIFTY. Expired
-        contracts are excluded when an expiry column is available.
-        """
         df = self.all_instruments()
         if df is None or len(df) == 0:
             return []
         df = df.copy()
         if "exchange" in df.columns:
-            df = df[df["exchange"].astype(str).str.upper().isin({"NSE", "NSE_EQ", "NSE_FNO"})]
+            df = df[df["exchange"].astype(str).str.upper().eq("NSE")]
         if "segment" in df.columns:
-            df = df[df["segment"].astype(str).str.upper() == "FNO"]
+            df = df[df["segment"].astype(str).str.upper().eq("FNO")]
         if active_only and "expiry_date" in df.columns:
             expiry = df["expiry_date"].astype(str).str[:10]
             df = df[(expiry == "") | (expiry == "nan") | (expiry >= date.today().isoformat())]
-
         columns = [
             "exchange", "exchange_token", "trading_symbol", "groww_symbol",
             "underlying_symbol", "expiry_date", "strike_price", "instrument_type",
@@ -116,9 +112,9 @@ class GrowwClient:
             return []
         df = df.copy()
         if "segment" in df.columns:
-            df = df[df["segment"].astype(str).str.upper() == "FNO"]
+            df = df[df["segment"].astype(str).str.upper().eq("FNO")]
         if "underlying_symbol" in df.columns:
-            df = df[df["underlying_symbol"].astype(str).str.upper() == "NIFTY"]
+            df = df[df["underlying_symbol"].astype(str).str.upper().eq("NIFTY")]
         if expiry_date is not None and "expiry_date" in df.columns:
             df = df[df["expiry_date"].astype(str).str[:10] == expiry_date.isoformat()]
         if strike_min is not None and "strike_price" in df.columns:
