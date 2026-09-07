@@ -6,8 +6,6 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from growwapi.groww.exceptions import GrowwAPIException
-
 from app.core.event_bus import research_event_bus
 from app.services.groww_client import groww_client
 
@@ -74,31 +72,18 @@ class FNOScanner:
         return str(meta.get("trading_symbol") or "").strip()
 
     def _fetch_batch(self, batch: list[str]) -> tuple[dict[str, Any], int, bool]:
-        """Fetch a batch and recursively isolate rejected symbols with bounded calls."""
+        """Fetch one API-sized batch without recursively multiplying requests."""
         try:
             return groww_client.ltp(batch) or {}, 0, True
-        except (GrowwAPIException, ValueError) as exc:
-            logger.warning(
-                "Groww F&O LTP batch rejected; splitting batch_size=%d error=%s",
-                len(batch),
-                exc,
-            )
         except Exception as exc:
+            sample = ", ".join(batch[:3])
             logger.warning(
-                "Groww F&O LTP batch failed; splitting batch_size=%d error=%s",
+                "Groww F&O LTP batch failed; batch_size=%d sample=%s error=%s",
                 len(batch),
+                sample,
                 exc,
             )
-
-        if len(batch) == 1:
-            logger.warning("Skipping rejected Groww F&O symbol=%s", batch[0])
-            return {}, 1, False
-
-        midpoint = len(batch) // 2
-        left_quotes, left_invalid, left_ok = self._fetch_batch(batch[:midpoint])
-        right_quotes, right_invalid, right_ok = self._fetch_batch(batch[midpoint:])
-        left_quotes.update(right_quotes)
-        return left_quotes, left_invalid + right_invalid, left_ok or right_ok
+            return {}, 0, False
 
     def _scan_once(self) -> None:
         instruments = groww_client.fno_instruments(active_only=True)
@@ -112,13 +97,11 @@ class FNOScanner:
         quotes_received = 0
         successful_batches = 0
         failed_batches = 0
-        invalid_symbols = 0
 
         for start in range(0, len(symbols), self.BATCH_SIZE):
             batch = symbols[start : start + self.BATCH_SIZE]
-            quotes, invalid, ok = self._fetch_batch(batch)
+            quotes, _, ok = self._fetch_batch(batch)
             scanned += len(batch)
-            invalid_symbols += invalid
             if quotes:
                 successful_batches += 1
                 quotes_received += len(quotes)
@@ -169,10 +152,10 @@ class FNOScanner:
             self._quotes_received = quotes_received
             self._successful_batches = successful_batches
             self._failed_batches = failed_batches
-            self._invalid_symbols = invalid_symbols
+            self._invalid_symbols = 0
             self._latest = rankings
             self._checks += 1
-            self._errors += invalid_symbols
+            self._errors += failed_batches
 
         research_event_bus.publish(
             self.OUTPUT_TOPIC,
@@ -184,7 +167,7 @@ class FNOScanner:
                 "quotes_received": quotes_received,
                 "successful_batches": successful_batches,
                 "failed_batches": failed_batches,
-                "invalid_symbols": invalid_symbols,
+                "invalid_symbols": 0,
                 "rankings": rankings,
             },
         )
