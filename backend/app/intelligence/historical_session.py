@@ -15,11 +15,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class HistoricalSessionAnalyzer:
-    """Build a post-market research snapshot from Groww historical candles.
-
-    This deliberately uses historical OHLCV/OI data instead of pretending that
-    the live feed is still running after the exchange closes.
-    """
+    """Analyze a completed NSE session from Groww historical candles."""
 
     MARKET_OPEN = time(9, 15)
     MARKET_CLOSE = time(15, 40)
@@ -39,9 +35,10 @@ class HistoricalSessionAnalyzer:
         self._rows: list[dict[str, Any]] = []
         self._underlyings: list[dict[str, Any]] = []
         self._results: list[dict[str, Any]] = []
-        self._checks = 0
+        self._selected_contracts = 0
         self._requests = 0
         self._errors = 0
+        self._checks = 0
         self._last_error: str | None = None
         self._started_at: str | None = None
         self._completed_at: str | None = None
@@ -58,14 +55,15 @@ class HistoricalSessionAnalyzer:
                 "mode": "POST_MARKET_HISTORICAL",
                 "target_date": self._target_date,
                 "checks": self._checks,
+                "selected_contracts": self._selected_contracts,
+                "contracts": len(self._rows),
+                "underlyings": len(self._underlyings),
+                "opportunities": len(self._results),
                 "requests": self._requests,
                 "errors": self._errors,
                 "last_error": self._last_error,
                 "started_at": self._started_at,
                 "completed_at": self._completed_at,
-                "contracts": len(self._rows),
-                "underlyings": len(self._underlyings),
-                "opportunities": len(self._results),
                 "latest_rows": self._rows[:100],
                 "underlying_rankings": self._underlyings[:50],
                 "results": self._results[:50],
@@ -88,14 +86,12 @@ class HistoricalSessionAnalyzer:
             typ = str(row.get("instrument_type") or "").upper()
             underlying = str(row.get("underlying_symbol") or "").strip().upper()
             expiry_text = str(row.get("expiry_date") or "")[:10]
-            token = str(row.get("exchange_token") or "")
-            if typ not in {"CE", "PE"} or not underlying or not token:
+            if typ not in {"CE", "PE"} or not underlying or not row.get("exchange_token"):
                 continue
             try:
-                expiry = date.fromisoformat(expiry_text)
+                dte = (date.fromisoformat(expiry_text) - target).days
             except ValueError:
                 continue
-            dte = (expiry - target).days
             if cls.MIN_DTE <= dte <= cls.MAX_DTE:
                 grouped.setdefault(underlying, []).append(row)
 
@@ -104,58 +100,53 @@ class HistoricalSessionAnalyzer:
             expiries = sorted({str(r.get("expiry_date"))[:10] for r in contracts})
             if not expiries:
                 continue
-            expiry_text = min(expiries, key=lambda x: abs((date.fromisoformat(x) - target).days - 14))
-            expiry_rows = [r for r in contracts if str(r.get("expiry_date"))[:10] == expiry_text]
+            expiry = min(expiries, key=lambda x: abs((date.fromisoformat(x) - target).days - 14))
+            expiry_rows = [r for r in contracts if str(r.get("expiry_date"))[:10] == expiry]
             strikes = sorted({float(r.get("strike_price") or 0) for r in expiry_rows if float(r.get("strike_price") or 0) > 0})
             if not strikes:
                 continue
             center = strikes[len(strikes) // 2]
-            nearby = sorted(strikes, key=lambda strike: (abs(strike - center), strike))[: cls.STRIKES_PER_SIDE]
+            nearby = sorted(strikes, key=lambda x: (abs(x - center), x))[: cls.STRIKES_PER_SIDE]
             for strike in nearby:
                 for typ in ("CE", "PE"):
                     match = next((r for r in expiry_rows if float(r.get("strike_price") or 0) == strike and str(r.get("instrument_type") or "").upper() == typ), None)
                     if match:
                         selected.append(match)
-
         return selected[: cls.MAX_CONTRACTS]
 
     @staticmethod
-    def _candle_summary(candles: Any) -> dict[str, float] | None:
+    def _candle_summary(candles: Any) -> dict[str, Any] | None:
         if not isinstance(candles, list):
             return None
-        parsed: list[tuple[float, float, float | None, str]] = []
+        valid: list[tuple[Any, float, float, float, float, float, float | None]] = []
         for candle in candles:
             if not isinstance(candle, (list, tuple)) or len(candle) < 6:
                 continue
             try:
-                opened = float(candle[1])
-                closed = float(candle[4])
-                volume = float(candle[5] or 0)
+                ts = candle[0]
+                opened, high, low, closed, volume = map(float, candle[1:6])
             except (TypeError, ValueError):
                 continue
-            oi: float | None = None
+            oi = None
             if len(candle) >= 7 and candle[6] not in (None, ""):
                 try:
                     oi = float(candle[6])
                 except (TypeError, ValueError):
-                    oi = None
-            parsed.append((opened, closed, oi, str(candle[0])))
-        if not parsed:
+                    pass
+            valid.append((ts, opened, high, low, closed, volume, oi))
+        if not valid or valid[0][1] == 0:
             return None
-        first = parsed[0]
-        last = parsed[-1]
-        if first[0] == 0:
-            return None
+        first, last = valid[0], valid[-1]
         return {
-            "session_open": first[0],
-            "session_close": last[1],
-            "session_high": max(float(c[1]) for c in candles if isinstance(c, (list, tuple)) and len(c) >= 3),
-            "session_low": min(float(c[3]) for c in candles if isinstance(c, (list, tuple)) and len(c) >= 4),
-            "volume": sum(float(c[5] or 0) for c in candles if isinstance(c, (list, tuple)) and len(c) >= 6),
-            "open_interest": last[2] if last[2] is not None else 0.0,
-            "oi_change": (last[2] - first[2]) if last[2] is not None and first[2] is not None else None,
-            "session_change_pct": (last[1] - first[0]) / abs(first[0]) * 100.0,
-            "last_timestamp": last[3],
+            "session_open": first[1],
+            "session_close": last[4],
+            "session_high": max(x[2] for x in valid),
+            "session_low": min(x[3] for x in valid),
+            "volume": sum(x[5] for x in valid),
+            "open_interest": last[6] if last[6] is not None else 0.0,
+            "oi_change": last[6] - first[6] if last[6] is not None and first[6] is not None else None,
+            "session_change_pct": (last[4] - first[1]) / abs(first[1]) * 100.0,
+            "last_timestamp": str(last[0]),
         }
 
     @staticmethod
@@ -163,182 +154,118 @@ class HistoricalSessionAnalyzer:
         value = str(row.get("groww_symbol") or "").strip()
         if value:
             return value
-        underlying = str(row.get("underlying_symbol") or "").upper()
         expiry = date.fromisoformat(str(row.get("expiry_date"))[:10])
-        strike = float(row.get("strike_price") or 0)
-        typ = str(row.get("instrument_type") or "").upper()
-        return f"NSE-{underlying}-{expiry.strftime('%d%b%y')}-{strike:g}-{typ}"
+        return f"NSE-{str(row.get('underlying_symbol')).upper()}-{expiry.strftime('%d%b%y')}-{float(row.get('strike_price') or 0):g}-{str(row.get('instrument_type')).upper()}"
 
     @staticmethod
     def _score(change: float) -> float:
         return round(min(100.0, abs(change) * 20.0), 2)
 
-    def _historical_contract(self, row: dict[str, Any], target: date) -> dict[str, Any] | None:
-        symbol = self._groww_symbol(row)
+    def _fetch_contract(self, row: dict[str, Any], target: date) -> dict[str, Any] | None:
         response = groww_client.historical_candles(
-            symbol,
-            f"{target.isoformat()} 09:15:00",
-            f"{target.isoformat()} 15:40:00",
-            segment="FNO",
-            candle_interval="5minute",
+            self._groww_symbol(row), f"{target} 09:15:00", f"{target} 15:40:00", "FNO", "5minute"
         )
-        summary = self._candle_summary(response.get("candles") if isinstance(response, dict) else None)
         with self._lock:
             self._requests += 1
+        summary = self._candle_summary(response.get("candles") if isinstance(response, dict) else None)
         if not summary:
             return None
         change = float(summary["session_change_pct"])
-        expiry = str(row.get("expiry_date"))[:10]
         return {
-            "symbol": row.get("trading_symbol"),
-            "groww_symbol": symbol,
-            "groww_exchange_symbol": f"NSE_{row.get('trading_symbol')}",
+            "symbol": row.get("trading_symbol"), "groww_symbol": self._groww_symbol(row),
             "underlying": str(row.get("underlying_symbol") or "").upper(),
-            "exchange": "NSE",
-            "segment": "FNO",
             "instrument_type": str(row.get("instrument_type") or "").upper(),
-            "expiry_date": expiry,
-            "strike_price": row.get("strike_price"),
-            "exchange_token": row.get("exchange_token"),
-            "lot_size": row.get("lot_size"),
-            "ltp": round(float(summary["session_close"]), 4),
-            "session_open": round(float(summary["session_open"]), 4),
-            "session_high": round(float(summary["session_high"]), 4),
-            "session_low": round(float(summary["session_low"]), 4),
-            "change_pct_since_last_minute": round(change, 4),
-            "session_change_pct": round(change, 4),
-            "activity_score": self._score(change),
-            "direction": "UP" if change > 0 else "DOWN" if change < 0 else "FLAT",
-            "volume": int(summary["volume"]),
-            "open_interest": int(summary["open_interest"]),
-            "oi_change_pct": None if summary["oi_change"] is None or not summary["open_interest"] else round(float(summary["oi_change"]) / max(abs(float(summary["open_interest"]) - float(summary["oi_change"])), 1) * 100.0, 4),
+            "expiry_date": str(row.get("expiry_date"))[:10], "strike_price": row.get("strike_price"),
+            "exchange_token": row.get("exchange_token"), "lot_size": row.get("lot_size"),
+            "ltp": round(summary["session_close"], 4), "session_open": round(summary["session_open"], 4),
+            "session_high": round(summary["session_high"], 4), "session_low": round(summary["session_low"], 4),
+            "change_pct_since_last_minute": round(change, 4), "session_change_pct": round(change, 4),
+            "activity_score": self._score(change), "direction": "UP" if change > 0 else "DOWN" if change < 0 else "FLAT",
+            "volume": int(summary["volume"]), "open_interest": int(summary["open_interest"]),
             "oi_change": summary["oi_change"],
-            "timestamp_ms": int(datetime.fromisoformat(summary["last_timestamp"].replace("Z", "+00:00")).timestamp() * 1000) if "T" in summary["last_timestamp"] else int(datetime.combine(target, time(15, 40), tzinfo=IST).timestamp() * 1000),
+            "timestamp_ms": int(datetime.combine(target, time(15, 40), tzinfo=IST).timestamp() * 1000),
             "data_sources": ["GROWW_HISTORICAL_CANDLES"],
-            "data_completeness": "HISTORICAL_SESSION_OHLCV_OI",
-            "research_session": target.isoformat(),
+            "data_completeness": "HISTORICAL_SESSION_OHLCV_OI", "research_session": target.isoformat(),
         }
 
-    def _underlying_snapshot(self, underlying: str, target: date) -> dict[str, Any] | None:
+    def _fetch_underlying(self, underlying: str, target: date) -> dict[str, Any] | None:
         try:
             response = groww_client.historical_candles(
-                f"NSE-{underlying}",
-                f"{target.isoformat()} 09:15:00",
-                f"{target.isoformat()} 15:40:00",
-                segment="CASH",
-                candle_interval="5minute",
+                f"NSE-{underlying}", f"{target} 09:15:00", f"{target} 15:40:00", "CASH", "5minute"
             )
-            summary = self._candle_summary(response.get("candles") if isinstance(response, dict) else None)
             with self._lock:
                 self._requests += 1
+            summary = self._candle_summary(response.get("candles") if isinstance(response, dict) else None)
             if not summary:
                 return None
             change = float(summary["session_change_pct"])
             return {
-                "underlying": underlying,
-                "activity_score": self._score(change),
+                "underlying": underlying, "activity_score": self._score(change),
                 "direction": "UP" if change > 0 else "DOWN" if change < 0 else "FLAT",
-                "session_change_pct": round(change, 4),
-                "spot": round(float(summary["session_close"]), 4),
-                "session_open": round(float(summary["session_open"]), 4),
-                "session_high": round(float(summary["session_high"]), 4),
-                "session_low": round(float(summary["session_low"]), 4),
-                "data_sources": ["GROWW_HISTORICAL_UNDERLYING"],
-                "data_completeness": "HISTORICAL_SESSION_OHLC",
+                "session_change_pct": round(change, 4), "spot": round(summary["session_close"], 4),
+                "session_open": round(summary["session_open"], 4), "session_high": round(summary["session_high"], 4),
+                "session_low": round(summary["session_low"], 4), "data_sources": ["GROWW_HISTORICAL_UNDERLYING"],
             }
-        except Exception as exc:
-            logger.warning("Historical underlying fetch failed for %s: %s", underlying, exc)
+        except Exception:
             with self._lock:
                 self._errors += 1
+            logger.exception("Historical underlying fetch failed for %s", underlying)
             return None
 
-    def _enrich_top_contracts(self, rows: list[dict[str, Any]]) -> None:
-        for row in sorted(rows, key=lambda r: float(r.get("activity_score") or 0), reverse=True)[: self.QUOTE_ENRICH_LIMIT]:
+    def _quote_enrich(self, rows: list[dict[str, Any]]) -> None:
+        for row in sorted(rows, key=lambda x: float(x.get("activity_score") or 0), reverse=True)[: self.QUOTE_ENRICH_LIMIT]:
             try:
                 quote = groww_client.quote(str(row.get("symbol")))
                 if isinstance(quote, dict):
-                    for key in ("open_interest", "volume", "implied_volatility", "average_price", "last_trade_time"):
-                        if key in quote:
-                            if key == "volume" and int(row.get("volume") or 0) > 0:
-                                continue
-                            row[key] = quote[key]
                     depth = quote.get("depth") or {}
-                    buy = depth.get("buy") or []
-                    sell = depth.get("sell") or []
-                    if buy:
-                        row["best_bid"] = buy[0].get("price")
-                    if sell:
-                        row["best_ask"] = sell[0].get("price")
-                    sources = set(row.get("data_sources") or [])
-                    sources.add("QUOTE")
-                    row["data_sources"] = sorted(sources)
-            except Exception as exc:
-                logger.debug("Historical quote enrichment failed for %s: %s", row.get("symbol"), exc)
+                    buy, sell = depth.get("buy") or [], depth.get("sell") or []
+                    if buy: row["best_bid"] = buy[0].get("price")
+                    if sell: row["best_ask"] = sell[0].get("price")
+                    if quote.get("implied_volatility") is not None: row["iv"] = quote["implied_volatility"]
+                    sources = set(row.get("data_sources") or []); sources.add("QUOTE"); row["data_sources"] = sorted(sources)
+            except Exception:
                 with self._lock:
                     self._errors += 1
             time_module.sleep(self.INTER_REQUEST_SECONDS)
 
     def _run(self, target: date) -> None:
-        started = datetime.now(IST).isoformat()
         with self._lock:
-            self._running = True
-            self._target_date = target.isoformat()
-            self._started_at = started
-            self._completed_at = None
-            self._last_error = None
-            self._rows = []
-            self._underlyings = []
-            self._results = []
-            self._checks += 1
+            self._running = True; self._target_date = target.isoformat(); self._started_at = datetime.now(IST).isoformat()
+            self._completed_at = None; self._last_error = None; self._rows = []; self._underlyings = []; self._results = []; self._requests = 0; self._errors = 0; self._checks += 1
         try:
-            instruments = groww_client.fno_instruments(active_only=True)
-            selected = self._select_contracts(instruments, target)
+            selected = self._select_contracts(groww_client.fno_instruments(active_only=True), target)
+            with self._lock: self._selected_contracts = len(selected)
             rows: list[dict[str, Any]] = []
-            for row in selected:
+            for item in selected:
                 try:
-                    result = self._historical_contract(row, target)
-                    if result:
-                        rows.append(result)
-                except Exception as exc:
-                    with self._lock:
-                        self._errors += 1
-                    logger.warning("Historical contract fetch failed for %s: %s", row.get("trading_symbol"), exc)
+                    result = self._fetch_contract(item, target)
+                    if result: rows.append(result)
+                except Exception:
+                    with self._lock: self._errors += 1
+                    logger.exception("Historical contract fetch failed for %s", item.get("trading_symbol"))
                 time_module.sleep(self.INTER_REQUEST_SECONDS)
 
-            # Use actual underlying historical candles for direction instead of
-            # inferring index direction from option-premium moves.
             underlyings: list[dict[str, Any]] = []
             names = sorted({str(r.get("underlying") or "") for r in rows if r.get("underlying")})[: self.MAX_UNDERLYINGS]
             for name in names:
-                item = self._underlying_snapshot(name, target)
-                if item:
-                    underlyings.append(item)
+                item = self._fetch_underlying(name, target)
+                if item: underlyings.append(item)
                 time_module.sleep(self.INTER_REQUEST_SECONDS)
-
-            by_underlying = {x["underlying"]: x for x in underlyings}
+            context = {x["underlying"]: x for x in underlyings}
             for row in rows:
-                context = by_underlying.get(str(row.get("underlying") or ""))
-                if context:
-                    row["underlying_spot"] = context["spot"]
-                    row["underlying_session_change_pct"] = context["session_change_pct"]
-
-            self._enrich_top_contracts(rows)
-            results = build_results(rows, underlyings, min_score=65.0)
-            for result in results.get("results", []):
-                result["method"] = "SLO_OPTIONS_V1_POST_MARKET_HISTORICAL"
-
-            underlyings.sort(key=lambda x: float(x.get("activity_score") or 0), reverse=True)
+                if row.get("underlying") in context:
+                    row["underlying_spot"] = context[row["underlying"]]["spot"]
+                    row["underlying_session_change_pct"] = context[row["underlying"]]["session_change_pct"]
+            self._quote_enrich(rows)
+            result = build_results(rows, underlyings, min_score=65.0)
+            for item in result.get("results", []): item["method"] = "SLO_OPTIONS_V1_POST_MARKET_HISTORICAL"
             rows.sort(key=lambda x: float(x.get("activity_score") or 0), reverse=True)
+            underlyings.sort(key=lambda x: float(x.get("activity_score") or 0), reverse=True)
             with self._lock:
-                self._rows = rows
-                self._underlyings = underlyings
-                self._results = results.get("results", [])
-                self._completed_at = datetime.now(IST).isoformat()
+                self._rows = rows; self._underlyings = underlyings; self._results = result.get("results", []); self._completed_at = datetime.now(IST).isoformat()
         except Exception as exc:
-            with self._lock:
-                self._last_error = str(exc)
-                self._errors += 1
-            logger.exception("Post-market historical session analysis failed")
+            with self._lock: self._last_error = str(exc); self._errors += 1
+            logger.exception("Post-market historical analysis failed")
         finally:
             self._running = False
 
@@ -346,15 +273,9 @@ class HistoricalSessionAnalyzer:
         target = target or self._target_session_date()
         target_text = target.isoformat()
         with self._lock:
-            already_complete = self._target_date == target_text and self._completed_at is not None
-            running = self.running and self._target_date == target_text
-        if already_complete or running:
-            return self.stats
-        if not groww_client.configured:
-            return self.stats
-        with self._lock:
-            if self._thread is not None and self._thread.is_alive():
-                return self.stats
+            if self._target_date == target_text and (self._completed_at or self.running): return self.stats
+            if self._thread is not None and self._thread.is_alive(): return self.stats
+            if not groww_client.configured: return self.stats
             self._thread = threading.Thread(target=self._run, args=(target,), name="historical-session", daemon=True)
             self._thread.start()
         return self.stats
