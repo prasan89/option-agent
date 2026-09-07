@@ -73,29 +73,32 @@ class FNOScanner:
     def _symbol(meta: dict[str, Any]) -> str:
         return str(meta.get("trading_symbol") or "").strip()
 
-    def _fetch_batch(self, batch: list[str]) -> tuple[dict[str, Any], int]:
-        """Fetch a batch; if Groww rejects it, isolate bad symbols individually."""
+    def _fetch_batch(self, batch: list[str]) -> tuple[dict[str, Any], int, bool]:
+        """Fetch a batch and recursively isolate rejected symbols with bounded calls."""
         try:
-            return groww_client.ltp(batch) or {}, 0
+            return groww_client.ltp(batch) or {}, 0, True
         except (GrowwAPIException, ValueError) as exc:
             logger.warning(
-                "Groww F&O LTP batch rejected; isolating symbols batch_size=%d error=%s",
+                "Groww F&O LTP batch rejected; splitting batch_size=%d error=%s",
                 len(batch),
                 exc,
             )
-        except Exception:
-            logger.exception("Unexpected Groww F&O LTP batch failure; isolating symbols")
+        except Exception as exc:
+            logger.warning(
+                "Groww F&O LTP batch failed; splitting batch_size=%d error=%s",
+                len(batch),
+                exc,
+            )
 
-        quotes: dict[str, Any] = {}
-        invalid = 0
-        for symbol in batch:
-            try:
-                result = groww_client.ltp([symbol]) or {}
-                quotes.update(result)
-            except Exception as exc:
-                invalid += 1
-                logger.warning("Skipping rejected Groww F&O symbol=%s error=%s", symbol, exc)
-        return quotes, invalid
+        if len(batch) == 1:
+            logger.warning("Skipping rejected Groww F&O symbol=%s", batch[0])
+            return {}, 1, False
+
+        midpoint = len(batch) // 2
+        left_quotes, left_invalid, left_ok = self._fetch_batch(batch[:midpoint])
+        right_quotes, right_invalid, right_ok = self._fetch_batch(batch[midpoint:])
+        left_quotes.update(right_quotes)
+        return left_quotes, left_invalid + right_invalid, left_ok or right_ok
 
     def _scan_once(self) -> None:
         instruments = groww_client.fno_instruments(active_only=True)
@@ -113,13 +116,13 @@ class FNOScanner:
 
         for start in range(0, len(symbols), self.BATCH_SIZE):
             batch = symbols[start : start + self.BATCH_SIZE]
-            quotes, invalid = self._fetch_batch(batch)
+            quotes, invalid, ok = self._fetch_batch(batch)
             scanned += len(batch)
             invalid_symbols += invalid
             if quotes:
                 successful_batches += 1
                 quotes_received += len(quotes)
-            else:
+            if not ok:
                 failed_batches += 1
 
             for returned_symbol, raw in quotes.items():
