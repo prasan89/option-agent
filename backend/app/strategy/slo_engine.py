@@ -8,6 +8,17 @@ def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
     return max(low, min(high, value))
 
 
+def _iv_decimal(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        iv = float(value)
+    except (TypeError, ValueError):
+        return None
+    # Groww option-chain Greeks expose IV as a percentage; SLO uses decimal IV.
+    return iv / 100.0 if iv > 1.0 else iv
+
+
 def candidate_score(row: dict[str, Any], direction_score: float) -> dict[str, float]:
     """SLO Options V1 candidate scoring adapted to option-agent live-feed rows."""
     premium = float(row.get("mid") or row.get("ltp") or 0)
@@ -16,8 +27,9 @@ def candidate_score(row: dict[str, Any], direction_score: float) -> dict[str, fl
     spread_pct = ((ask - bid) / premium) if premium > 0 and ask >= bid else 1.0
     theta = abs(float(row.get("theta") or 0))
     theta_ratio = theta / max(premium, 0.01)
-    iv = row.get("iv")
-    volatility_score = 50.0 if iv is None else _clamp(100.0 - abs(float(iv) - 0.20) * 100.0)
+    # The live feed currently does not provide a comparable underlying HV series,
+    # so preserve the SLO baseline behavior when IV/HV is unavailable.
+    volatility_score = 50.0
     liquidity_score = _clamp(100.0 * (1.0 - spread_pct / 0.10))
     theta_score = _clamp(100.0 * (1.0 - theta_ratio / 0.10))
     direction = _clamp(abs(float(direction_score)))
@@ -54,16 +66,17 @@ def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]],
             option_type = str(row.get("instrument_type") or "").upper()
             if option_type not in {"CE", "PE"}:
                 continue
-            premium = float(row.get("best_bid") or 0) + float(row.get("best_ask") or 0)
-            premium = premium / 2.0
+            premium = (float(row.get("best_bid") or 0) + float(row.get("best_ask") or 0)) / 2.0
             if premium <= 0:
                 premium = float(row.get("ltp") or 0)
+            if premium <= 0:
+                continue
             expiry_text = str(row.get("expiry_date") or "")[:10]
             try:
                 dte = (date.fromisoformat(expiry_text) - date.today()).days
             except ValueError:
                 dte = 0
-            # Keep the source strategy's 7-30 day research window when possible.
+            # Preserve the SLO V1 7-30 day research window.
             if dte < 7 or dte > 30:
                 continue
             if int(row.get("volume") or 0) < 1000 or int(row.get("open_interest") or 0) < 5000:
@@ -100,7 +113,7 @@ def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]],
                 "gamma": row.get("gamma"),
                 "theta": row.get("theta"),
                 "vega": row.get("vega"),
-                "iv": row.get("iv"),
+                "iv": _iv_decimal(row.get("iv")),
                 "volume": row.get("volume"),
                 "open_interest": row.get("open_interest"),
                 "data_sources": row.get("data_sources") or [],
