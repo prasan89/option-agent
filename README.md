@@ -14,19 +14,18 @@ Implemented:
 - F&O instrument-master access
 - LTP retrieval
 - Groww live LTP and aggregated market-depth feed
-- Raw observations in Redis Stream `market:raw`
+- Raw events published to the in-process event bus
 
 ## Phase 2 — Options-flow detection
 
 Implemented:
-- Redis-stream flow engine
+- In-process event-bus flow engine
 - LTP-vs-best-bid/ask aggression inference
 - Bid/ask depth imbalance
 - Price-momentum confirmation
 - Explainable 0–100 flow score
 - BUY/SELL directional classification
 - Evidence labels
-- Redis Stream `flow:signals`
 
 ## Phase 3 — Flow intelligence and scoring
 
@@ -35,8 +34,8 @@ Implemented:
 - One-minute F&O scanner cadence
 - Batched LTP collection
 - One-minute price-movement/activity ranking
-- Redis Stream `fno:rankings`
-- Flow intelligence scoring engine consuming `flow:signals`
+- Event-bus ranking publication
+- Flow intelligence scoring engine
 - Confidence-weighted intelligence score from -100 to +100
 - BULLISH / BEARISH / NEUTRAL bias
 - Explainable evidence enrichment
@@ -44,10 +43,10 @@ Implemented:
 ## Phase 4 — Historical data and learning dataset
 
 Implemented:
-- Historical observation collector
+- PostgreSQL-backed historical observation collector
 - Normalized model-ready observation records
 - Explicit `UNLABELED` status to prevent future-information leakage
-- Redis Stream `dataset:observations`
+- Durable dataset persistence across application restarts
 - Dataset status/start/stop/recent APIs
 
 ## Phase 5 — ML prediction
@@ -58,7 +57,8 @@ Implemented:
 - Baseline supervised classifier using flow and market features
 - Probability of UP/DOWN prediction
 - Explicit model readiness state
-- ML engine consuming historical observations
+- ML engine consuming the in-process dataset stream
+- Durable PostgreSQL labels
 - Training API and prediction API
 - ML status integrated into `/system/status`
 - `numpy` and `scikit-learn` dependencies
@@ -80,25 +80,21 @@ Implemented:
 - Database availability and pipeline-stage visibility
 - Trading remains disabled
 
-## Data flow
+## Phase 6A — BTP Trial Redis-free architecture
+
+The BTP Trial deployment no longer requires Redis. A bounded in-memory event bus provides asynchronous pub/sub between pipeline components, while PostgreSQL provides durable persistence for the dataset, labels and final signals.
 
 ```text
 Groww live feed
       |
       v
- market:raw
+In-memory Event Bus
       |
       v
  Flow Engine
       |
       v
- flow:signals
-      |
-      v
- Intelligence Score
-      |
-      v
- intelligence:signals
+Intelligence Score
       |
       +--------------------+
       |                    |
@@ -106,11 +102,13 @@ Groww live feed
 Dataset Collector     5-min Signal Monitor
       |                    |
       v                    v
-ML / labels          PostgreSQL
-                           |
-                           v
-                       Dashboard
+PostgreSQL labels     PostgreSQL signals
+      |                    |
+      v                    v
+ML / predictions       Dashboard
 ```
+
+This design is intentionally for one Cloud Foundry application instance. The event-bus abstraction can later be backed by Redis/Kafka if horizontal scaling is required.
 
 ## API endpoints
 
@@ -127,6 +125,8 @@ GET  /signals/status
 POST /signals/start
 POST /signals/stop
 POST /signals/run-once
+GET  /dataset/status
+GET  /dataset/recent?limit=25
 GET  /ml/status
 GET  /ml/latest?limit=25
 POST /ml/start
@@ -139,7 +139,7 @@ POST /ml/predict
 
 1. Copy `.env.example` to `.env`.
 2. Configure Groww credentials locally; never commit them.
-3. Start the stack:
+3. Start PostgreSQL:
 
 ```bash
 docker compose up --build
@@ -150,12 +150,12 @@ docker compose up --build
 
 ## BTP deployment
 
-The Cloud Foundry app requires reachable Redis and PostgreSQL services. Do not put credentials in Git or in this README. Configure them as Cloud Foundry environment variables:
+The BTP Trial architecture requires **PostgreSQL only**. Redis is not required.
+
+If PostgreSQL is bound to the Cloud Foundry application, the app automatically reads its connection credentials from `VCAP_SERVICES`. A manual `DATABASE_URL` is therefore optional.
 
 ```bash
-cf set-env option-agent-api DATABASE_URL '<POSTGRES_CONNECTION_STRING>'
-cf set-env option-agent-api REDIS_URL '<REDIS_CONNECTION_STRING>'
-cf set-env option-agent-api AUTO_START_PIPELINE true
+cf push option-agent-api
 cf restart option-agent-api
 ```
 
@@ -178,6 +178,8 @@ The signal threshold is currently an absolute intelligence score of 60 with non-
 
 The application intentionally keeps order placement disabled. Paper trading, risk controls, backtesting and walk-forward validation must be completed before considering any execution integration.
 
+The current event bus is in-memory and the deployment is intentionally one-instance. A restart does not preserve transient in-flight events, but durable observations, labels and signals already written to PostgreSQL remain available.
+
 ## Roadmap
 
 0. Foundation — complete
@@ -188,6 +190,7 @@ The application intentionally keeps order placement disabled. Paper trading, ris
 4. Historical data and learning dataset — complete
 5. ML prediction — complete
 6. Autonomous signal dashboard — complete
+6A. BTP Trial Redis-free pipeline — complete
 7. AI strategy discovery
 8. Backtesting and walk-forward validation
 9. Paper trading
