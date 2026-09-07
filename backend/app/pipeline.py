@@ -46,6 +46,7 @@ class ResearchPipeline:
             "running": self.running,
             "auto_start": settings.auto_start_pipeline,
             "feed": feed_service.running,
+            "feed_starting": feed_service.starting,
             "feed_instruments": len(feed_service.instruments),
             "flow": flow_engine.running,
             "scanner": fno_scanner.running,
@@ -71,19 +72,21 @@ class ResearchPipeline:
             token = str(row.get("exchange_token") or "")
             if token and expiry >= today and typ in {"CE", "PE"}:
                 eligible.append(row)
+
         if not eligible:
             raise RuntimeError("No active NIFTY option contracts available for Groww feed")
 
         nearest = sorted({str(r.get("expiry_date"))[:10] for r in eligible})[0]
-        selected = [
-            r for r in eligible if str(r.get("expiry_date"))[:10] == nearest
-        ]
+        selected = [r for r in eligible if str(r.get("expiry_date"))[:10] == nearest]
         selected.sort(
             key=lambda r: (
                 float(r.get("strike_price") or 0),
                 str(r.get("instrument_type") or ""),
             )
         )
+
+        # Groww Feed expects exchange/segment/exchange_token, not the REST
+        # LTP API's exchange-prefixed trading symbols.
         return [
             {
                 "exchange": "NSE",
@@ -102,11 +105,11 @@ class ResearchPipeline:
 
             research_store.init()
             self._last_error = None
-
             started: list[Any] = []
+
             try:
-                # Start every event consumer before the producer. This avoids
-                # losing the first market events while subscribers initialize.
+                # Start every consumer before the producer so the first market
+                # events are not lost while subscribers initialize.
                 if not flow_engine.running:
                     flow_engine.start()
                     started.append(flow_engine)
@@ -126,18 +129,18 @@ class ResearchPipeline:
                     signal_monitor.start()
                     started.append(signal_monitor)
 
-                if not feed_service.running:
+                if not feed_service.running and not feed_service.starting:
                     instruments = self._feed_instruments()
                     feed_service.start(instruments)
                     self._feed_symbols = len(instruments)
                     started.append(feed_service)
 
+                # Feed startup is intentionally asynchronous. A slow Groww
+                # NATS/WebSocket handshake must not roll back healthy consumers.
                 self._running = True
                 return self.stats
-            except Exception:
-                # Roll back components started by this attempt. The feed has
-                # its own dedicated daemon thread and will not touch Uvicorn's
-                # event loop.
+            except Exception as exc:
+                self._last_error = str(exc)
                 for component in reversed(started):
                     try:
                         component.stop()
