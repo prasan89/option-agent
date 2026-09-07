@@ -1,135 +1,67 @@
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from typing import Any
 
-import redis
-
-from app.core.config import settings
+from app.core.event_bus import research_event_bus
+from app.research.store import research_store
 
 logger = logging.getLogger(__name__)
 
 
 class HistoricalDatasetCollector:
-    """Persist model-ready market observations without placing trades."""
-
-    INPUT_STREAMS = ("fno:rankings", "intelligence:signals")
-    OUTPUT_STREAM = "dataset:observations"
-    MAXLEN = 1_000_000
+    """Persist model-ready observations in PostgreSQL and publish them onward."""
+    INPUT_TOPICS = ("fno.rankings", "intelligence.signals")
+    OUTPUT_TOPIC = "dataset.observations"
 
     def __init__(self) -> None:
-        self._redis = redis.Redis.from_url(settings.redis_url, decode_responses=True)
-        self._thread: threading.Thread | None = None
-        self._running = False
-        self._last_ids = {name: "$" for name in self.INPUT_STREAMS}
-        self._observations = 0
-        self._errors = 0
-        self._lock = threading.Lock()
+        self._running=False; self._observations=0; self._errors=0; self._subscriptions=[]; self._lock=threading.Lock()
 
     @property
-    def running(self) -> bool:
-        return self._running and self._thread is not None and self._thread.is_alive()
+    def running(self)->bool:return self._running
 
     @property
-    def stats(self) -> dict[str, Any]:
-        with self._lock:
-            return {
-                "running": self.running,
-                "observations": self._observations,
-                "errors": self._errors,
-                "output_stream": self.OUTPUT_STREAM,
-                "retention_maxlen": self.MAXLEN,
-            }
+    def stats(self)->dict[str,Any]:
+        try: counts=research_store.counts(); db=True
+        except Exception: counts={}; db=False
+        with self._lock:return {"running":self.running,"observations":self._observations,"errors":self._errors,"database_available":db,"persisted":counts}
 
-    @staticmethod
-    def _append(redis_client: redis.Redis, record: dict[str, Any]) -> None:
-        redis_client.xadd(
-            HistoricalDatasetCollector.OUTPUT_STREAM,
-            {"observation": json.dumps(record, separators=(",", ":"))},
-            maxlen=HistoricalDatasetCollector.MAXLEN,
-            approximate=True,
-        )
-
-    def _consume_rankings(self, entries: list[tuple[str, dict[str, Any]]]) -> None:
-        for entry_id, values in entries:
-            self._last_ids["fno:rankings"] = entry_id
-            payload = json.loads(values.get("scan", "{}"))
-            timestamp = payload.get("timestamp")
-            for row in payload.get("rankings", []):
-                if not isinstance(row, dict) or not row.get("symbol"):
-                    continue
-                self._append(self._redis, {
-                    "timestamp": timestamp,
-                    "source": "fno_scanner",
-                    "symbol": row.get("symbol"),
-                    "underlying": row.get("underlying"),
-                    "instrument_type": row.get("instrument_type"),
-                    "expiry_date": row.get("expiry_date"),
-                    "strike_price": row.get("strike_price"),
-                    "ltp": row.get("ltp"),
-                    "change_pct_1m": row.get("change_pct_since_last_scan"),
-                    "activity_score": row.get("activity_score"),
-                    "direction": row.get("direction"),
-                    "label_status": "UNLABELED",
-                })
-                self._observations += 1
-
-    def _consume_intelligence(self, entries: list[tuple[str, dict[str, Any]]]) -> None:
-        for entry_id, values in entries:
-            self._last_ids["intelligence:signals"] = entry_id
-            signal = json.loads(values.get("signal", "{}"))
-            if not signal.get("token"):
-                continue
-            self._append(self._redis, {
-                "timestamp_ms": signal.get("timestamp_ms"),
-                "source": "intelligence_score",
-                "symbol": signal.get("token"),
-                "side": signal.get("side"),
-                "flow_event": signal.get("event"),
-                "flow_score": signal.get("score"),
-                "intelligence_score": signal.get("intelligence_score"),
-                "confidence": signal.get("confidence"),
-                "bias": signal.get("bias"),
-                "price_change_pct": signal.get("price_change_pct"),
-                "depth_imbalance": signal.get("depth_imbalance"),
-                "oi_change_pct": signal.get("oi_change_pct"),
-                "volume_change_pct": signal.get("volume_change_pct"),
-                "evidence": signal.get("evidence", []),
-                "label_status": "UNLABELED",
-            })
-            self._observations += 1
-
-    def _run(self) -> None:
+    def _save(self,row:dict[str,Any])->None:
         try:
-            while self._running:
-                try:
-                    records = self._redis.xread(self._last_ids, count=100, block=1000)
-                    for stream, entries in records:
-                        if stream == "fno:rankings":
-                            self._consume_rankings(entries)
-                        elif stream == "intelligence:signals":
-                            self._consume_intelligence(entries)
-                    with self._lock:
-                        self._observations = self._observations
-                except Exception:
-                    with self._lock:
-                        self._errors += 1
-                    logger.exception("Historical dataset collection failed")
-        finally:
-            self._running = False
+            if research_store.insert_observation(row):
+                with self._lock:self._observations+=1
+            research_event_bus.publish(self.OUTPUT_TOPIC,row)
+        except Exception:
+            with self._lock:self._errors+=1
+            logger.exception("Dataset persistence failed")
 
-    def start(self) -> None:
-        if self.running:
-            raise RuntimeError("Historical dataset collector is already running")
-        self._running = True
-        self._last_ids = {name: "$" for name in self.INPUT_STREAMS}
-        self._thread = threading.Thread(target=self._run, name="dataset-collector", daemon=True)
-        self._thread.start()
+    def _on_rankings(self,payload:dict[str,Any])->None:
+        for row in payload.get("rankings",[]):
+            if not isinstance(row,dict) or not row.get("symbol"):continue
+            self._save({"timestamp_ms":int(__import__('datetime').datetime.fromisoformat(str(payload.get('timestamp')).replace('Z','+00:00')).timestamp()*1000),"source":"fno_scanner",
+                "symbol":row.get("symbol"),"underlying":row.get("underlying"),"instrument_type":row.get("instrument_type"),"expiry_date":row.get("expiry_date"),
+                "strike_price":row.get("strike_price"),"ltp":row.get("ltp"),"change_pct_1m":row.get("change_pct_since_last_scan"),"activity_score":row.get("activity_score"),"direction":row.get("direction")})
 
-    def stop(self) -> None:
-        self._running = False
+    def _on_intelligence(self,signal:dict[str,Any])->None:
+        if not signal.get("token"):return
+        self._save({"timestamp_ms":signal.get("timestamp_ms"),"source":"intelligence_score","symbol":signal.get("token"),"underlying":signal.get("underlying"),
+            "instrument_type":signal.get("instrument_type"),"expiry_date":signal.get("expiry_date"),"strike_price":signal.get("strike_price"),"ltp":signal.get("ltp"),
+            "flow_event":signal.get("event"),"flow_score":signal.get("score"),"intelligence_score":signal.get("intelligence_score"),"confidence":signal.get("confidence"),
+            "bias":signal.get("bias"),"price_change_pct":signal.get("price_change_pct"),"depth_imbalance":signal.get("depth_imbalance"),"oi_change_pct":signal.get("oi_change_pct"),
+            "volume_change_pct":signal.get("volume_change_pct"),"evidence":signal.get("evidence",[])})
+
+    def start(self)->None:
+        if self.running:raise RuntimeError("Historical dataset collector is already running")
+        research_store.init(); self._running=True
+        self._subscriptions=[research_event_bus.subscribe("fno.rankings",self._on_rankings),research_event_bus.subscribe("intelligence.signals",self._on_intelligence)]
+
+    def stop(self)->None:
+        self._running=False
+        for token in self._subscriptions:research_event_bus.unsubscribe(token)
+        self._subscriptions=[]
+
+    def recent(self,limit:int=100)->list[dict[str,Any]]:return research_store.recent_observations(limit)
 
 
-historical_dataset_collector = HistoricalDatasetCollector()
+historical_dataset_collector=HistoricalDatasetCollector()
