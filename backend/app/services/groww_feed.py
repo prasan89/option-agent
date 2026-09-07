@@ -14,10 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 class GrowwFeedService:
-    """Read-only Groww stream publisher using the local event bus."""
+    """Read-only Groww stream publisher using the local event bus.
+
+    GrowwFeed construction can perform a blocking NATS/WebSocket connection.
+    The service therefore treats feed startup as asynchronous: downstream
+    consumers remain alive while the SDK establishes its connection.
+    """
 
     TOPIC = "market.raw"
-    START_TIMEOUT_SECONDS = 30
+    START_TIMEOUT_SECONDS = 5
 
     def __init__(self) -> None:
         self._feed: GrowwFeed | None = None
@@ -37,6 +42,10 @@ class GrowwFeedService:
         return self._running and self._thread is not None and self._thread.is_alive()
 
     @property
+    def starting(self) -> bool:
+        return self._initializing and self._thread is not None and self._thread.is_alive()
+
+    @property
     def instruments(self) -> list[dict[str, str]]:
         return self._instruments
 
@@ -45,6 +54,7 @@ class GrowwFeedService:
         with self._lock:
             return {
                 "running": self.running,
+                "starting": self.starting,
                 "initializing": self._initializing,
                 "startup_stage": self._startup_stage,
                 "instruments": len(self._instruments),
@@ -68,9 +78,11 @@ class GrowwFeedService:
         }
         try:
             research_event_bus.publish(self.TOPIC, event)
-            self._events += 1
+            with self._lock:
+                self._events += 1
         except Exception:
-            self._errors += 1
+            with self._lock:
+                self._errors += 1
             logger.exception("Failed to publish Groww event")
 
     def _run_feed(self, instruments: list[dict[str, str]]) -> None:
@@ -122,8 +134,8 @@ class GrowwFeedService:
                 self._initializing = False
 
     def start(self, instruments: list[dict[str, str]]) -> None:
-        if self.running or self._initializing:
-            raise RuntimeError("Groww feed is already running or starting")
+        if self.running or self.starting:
+            return
         if not instruments:
             raise ValueError("At least one instrument is required")
         if not groww_client.configured:
@@ -142,14 +154,18 @@ class GrowwFeedService:
         )
         self._thread.start()
 
+        # Do not fail the complete research pipeline merely because the Groww
+        # SDK's NATS/WebSocket constructor is taking longer than expected.
+        # The feed thread continues initialization in the background.
         if not self._ready.wait(timeout=self.START_TIMEOUT_SECONDS):
-            with self._lock:
-                self._initializing = False
-                stage = self._startup_stage
-            raise RuntimeError(
-                f"Groww feed did not initialize within {self.START_TIMEOUT_SECONDS} seconds; "
-                f"last startup stage: {stage}"
+            logger.warning(
+                "Groww feed is still initializing after %ss; stage=%s. "
+                "Pipeline will continue running while the feed connects.",
+                self.START_TIMEOUT_SECONDS,
+                self._startup_stage,
             )
+            return
+
         if self._startup_error:
             raise RuntimeError(
                 f"Groww feed failed during stage {self._startup_stage}: {self._startup_error}"
