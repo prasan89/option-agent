@@ -8,9 +8,11 @@ from app.api.groww import router as groww_router
 from app.api.intelligence import router as intelligence_router
 from app.api.intelligence_score import router as intelligence_score_router
 from app.api.ml import router as ml_router
+from app.api.pipeline import router as pipeline_router
 from app.api.scanner import router as scanner_router
 from app.api.signals import router as signals_router
 from app.core.config import settings
+from app.pipeline import research_pipeline
 from app.signals.monitor import signal_monitor
 
 app = FastAPI(
@@ -27,22 +29,19 @@ app.include_router(scanner_router)
 app.include_router(dataset_router)
 app.include_router(ml_router)
 app.include_router(signals_router)
+app.include_router(pipeline_router)
 app.include_router(dashboard_router)
 app.include_router(agent_router)
 
 
 @app.on_event("startup")
 def startup() -> None:
-    try:
-        signal_monitor.start()
-    except Exception:
-        import logging
-
-        logging.getLogger(__name__).exception("Signal monitor could not start")
+    research_pipeline.startup()
 
 
 @app.on_event("shutdown")
 def shutdown() -> None:
+    research_pipeline.stop()
     signal_monitor.stop()
 
 
@@ -86,6 +85,7 @@ def system_status() -> dict[str, object]:
         "model_ready": ml_engine.stats["model_ready"],
         "signal_monitor": "RUNNING" if signal_monitor.running else "STOPPED",
         "persisted_signals": signal_monitor.stats["persisted_signals"],
+        "pipeline": research_pipeline.stats,
         "ai_agent": "READY",
         "trading": "DISABLED",
     }
