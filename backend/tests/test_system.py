@@ -97,3 +97,28 @@ def test_fno_filters_remove_test_and_non_tradable_contracts() -> None:
     assert quality.tolist() == [False, True, True, True]
     assert tradable.tolist() == [True, True, False, False]
     assert active.tolist() == [True, True, True, True]
+
+
+def test_fno_expiry_window_excludes_contracts_beyond_two_months() -> None:
+    today, max_expiry = GrowwClient._expiry_window()
+    current_month_start = date(today.year, today.month, 1)
+
+    assert today <= max_expiry
+    assert max_expiry.month != today.month or max_expiry.year == today.year
+
+    def add_months(month_start: date, months: int) -> date:
+        index = month_start.month - 1 + months
+        return date(month_start.year + index // 12, index % 12 + 1, 1)
+
+    allowed_month_start = add_months(current_month_start, 2)
+    assert max_expiry.month == allowed_month_start.month
+    assert max_expiry.year == allowed_month_start.year
+
+    df = pd.DataFrame(
+        [
+            {"expiry_date": today.isoformat()},
+            {"expiry_date": max_expiry.isoformat()},
+            {"expiry_date": add_months(current_month_start, 3).isoformat()},
+        ]
+    )
+    assert GrowwClient._active_expiry_mask(df).tolist() == [True, True, False]
