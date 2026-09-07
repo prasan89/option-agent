@@ -51,26 +51,16 @@ class ResearchStore:
     @staticmethod
     def _observation_values(row: dict[str, Any]) -> tuple[Any, ...]:
         return (
-            row.get("timestamp_ms"), row.get("source", "unknown"), row.get("symbol", ""),
-            row.get("underlying"), row.get("instrument_type"), row.get("expiry_date"), row.get("strike_price"),
-            row.get("ltp"), row.get("change_pct_1m"), row.get("activity_score"), row.get("direction"),
-            row.get("flow_event"), row.get("flow_score"), row.get("intelligence_score"), row.get("confidence"),
-            row.get("bias"), row.get("price_change_pct"), row.get("depth_imbalance"), row.get("oi_change_pct"),
-            row.get("volume_change_pct"), json.dumps(row.get("evidence", [])),
+            row.get("timestamp_ms"), row.get("source", "unknown"), row.get("symbol", ""), row.get("underlying"),
+            row.get("instrument_type"), row.get("expiry_date"), row.get("strike_price"), row.get("ltp"),
+            row.get("change_pct_1m"), row.get("activity_score"), row.get("direction"), row.get("flow_event"),
+            row.get("flow_score"), row.get("intelligence_score"), row.get("confidence"), row.get("bias"),
+            row.get("price_change_pct"), row.get("depth_imbalance"), row.get("oi_change_pct"), row.get("volume_change_pct"),
+            json.dumps(row.get("evidence", [])),
         )
 
     def insert_observation(self, row: dict[str, Any]) -> bool:
-        with self.connect() as conn:
-            cur = conn.execute("""
-                INSERT INTO dataset_observations
-                (timestamp_ms, source, symbol, underlying, instrument_type, expiry_date, strike_price, ltp,
-                 change_pct_1m, activity_score, direction, flow_event, flow_score, intelligence_score,
-                 confidence, bias, price_change_pct, depth_imbalance, oi_change_pct, volume_change_pct, evidence)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (symbol, timestamp_ms, source) DO NOTHING
-            """, self._observation_values(row))
-            conn.commit()
-            return cur.rowcount > 0
+        return self.insert_observations([row]) > 0
 
     def insert_observations(self, rows: list[dict[str, Any]]) -> int:
         if not rows:
@@ -90,20 +80,31 @@ class ResearchStore:
             conn.commit()
             return inserted
 
+    @staticmethod
+    def _label_values(label: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            label["symbol"], label["timestamp_ms"], label["horizon_minutes"], label["entry_price"], label["future_price"],
+            label["return_pct"], label["direction"], label["future_timestamp_ms"], json.dumps(label.get("features", {})), label["label"],
+        )
+
     def insert_label(self, label: dict[str, Any]) -> bool:
+        return self.insert_labels([label]) > 0
+
+    def insert_labels(self, labels: list[dict[str, Any]]) -> int:
+        if not labels:
+            return 0
         with self.connect() as conn:
-            cur = conn.execute("""
-                INSERT INTO dataset_labels
-                (symbol,timestamp_ms,horizon_minutes,entry_price,future_price,return_pct,direction,future_timestamp_ms,features,label)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (symbol,timestamp_ms,horizon_minutes) DO NOTHING
-            """, (
-                label["symbol"], label["timestamp_ms"], label["horizon_minutes"], label["entry_price"],
-                label["future_price"], label["return_pct"], label["direction"], label["future_timestamp_ms"],
-                json.dumps(label.get("features", {})), label["label"],
-            ))
+            inserted = 0
+            for label in labels:
+                cur = conn.execute("""
+                    INSERT INTO dataset_labels
+                    (symbol,timestamp_ms,horizon_minutes,entry_price,future_price,return_pct,direction,future_timestamp_ms,features,label)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (symbol,timestamp_ms,horizon_minutes) DO NOTHING
+                """, self._label_values(label))
+                inserted += max(0, cur.rowcount)
             conn.commit()
-            return cur.rowcount > 0
+            return inserted
 
     def labels(self, horizon: int = 5, limit: int = 1_000_000) -> list[dict[str, Any]]:
         with self.connect() as conn:
@@ -117,9 +118,9 @@ class ResearchStore:
 
     def recent_observations(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute("SELECT * FROM dataset_observations ORDER BY observed_at DESC LIMIT %s", (max(1,min(limit,500)),)).fetchall()
+            rows = conn.execute("SELECT * FROM dataset_observations ORDER BY observed_at DESC LIMIT %s", (max(1, min(limit, 500)),)).fetchall()
             keys = [d.name for d in conn.execute("SELECT * FROM dataset_observations LIMIT 0").description]
-        return [dict(zip(keys,row)) for row in rows]
+        return [dict(zip(keys, row)) for row in rows]
 
     def counts(self) -> dict[str, int]:
         with self.connect() as conn:
