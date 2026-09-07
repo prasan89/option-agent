@@ -10,8 +10,9 @@ applications:
     health-check-http-endpoint: /health
     env:
       APP_NAME: option-agent
-      APP_VERSION: 0.3.0
+      APP_VERSION: 0.3.1
       ENVIRONMENT: btp
       LOG_LEVEL: INFO
-      AUTO_START_PIPELINE: true
-      # Set DATABASE_URL and REDIS_URL with cf set-env to your managed services.
+      # Pipeline stays off until Redis is bound. PostgreSQL can be discovered
+      # automatically from VCAP_SERVICES when a compatible service is bound.
+      AUTO_START_PIPELINE: false
