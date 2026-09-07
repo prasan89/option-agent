@@ -39,12 +39,13 @@ def test_dashboard_routes_are_registered() -> None:
     dashboard = client.get("/dashboard")
     assert dashboard.status_code == 200
     assert "AI F&O Intelligence" in dashboard.text
-    assert "Top Research Opportunities" in dashboard.text
+    assert "Today's Research Opportunities" in dashboard.text
     data = client.get("/dashboard/data")
     assert data.status_code == 200
     body = data.json()
-    assert body["market"]["timezone"] == "Asia/Kolkata"
+    assert body["market"]["regular_open"] == "09:15"
     assert body["strategy"]["trading"] == "DISABLED"
+    assert body["source_mode"] in {"LIVE_FEED", "HISTORICAL_LOADING", "POST_MARKET_HISTORICAL", "PREVIOUS_SESSION_HISTORICAL"}
 
 
 def test_dashboard_performance_route_is_registered() -> None:
