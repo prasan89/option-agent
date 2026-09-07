@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from app.core.event_bus import research_event_bus
@@ -13,13 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 class FNOScanner:
-    """Read-only one-minute scanner for the active NSE F&O universe."""
+    """Read-only one-minute scanner for the near-term NSE F&O universe."""
 
     INTERVAL_SECONDS = 60
     BATCH_SIZE = 50
     MAX_DIAGNOSTIC_REQUESTS = 40
     OUTPUT_TOPIC = "fno.rankings"
     MAX_RESULTS = 100
+    EXPIRY_MONTHS_AHEAD = 2
 
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
@@ -48,6 +49,7 @@ class FNOScanner:
             return {
                 "running": self.running,
                 "interval_seconds": self.INTERVAL_SECONDS,
+                "expiry_months_ahead": self.EXPIRY_MONTHS_AHEAD,
                 "checks": self._checks,
                 "symbols_available_last_check": self._symbols_available,
                 "symbols_scanned_last_check": self._symbols_scanned,
@@ -80,8 +82,32 @@ class FNOScanner:
     def _is_bad_request(exc: Exception) -> bool:
         return "Groww LTP HTTP 400" in str(exc) and ("GA001" in str(exc) or "Bad Request" in str(exc))
 
+    @classmethod
+    def _expiry_allowed(cls, value: Any, today: date | None = None) -> bool:
+        """Allow current month and the next two calendar months only."""
+        today = today or date.today()
+        raw = str(value or "").strip()[:10]
+        try:
+            expiry = date.fromisoformat(raw)
+        except ValueError:
+            return False
+        start_index = today.year * 12 + (today.month - 1)
+        expiry_index = expiry.year * 12 + (expiry.month - 1)
+        return start_index <= expiry_index <= start_index + cls.EXPIRY_MONTHS_AHEAD
+
+    @staticmethod
+    def _quality_allowed(symbol: str) -> bool:
+        value = symbol.upper()
+        if not value or "NSETEST" in value:
+            return False
+        # These non-standard FPI contracts repeatedly return Groww GA001 and
+        # are not useful for the near-term F&O scanner.
+        if value.startswith("NIFTYFPI"):
+            return False
+        return True
+
     def _fetch_batch(self, batch: list[str], diagnostic_budget: list[int]) -> tuple[dict[str, Any], int, bool]:
-        """Fetch LTPs and quarantine symbols individually rejected by Groww GA001."""
+        """Fetch LTPs and quietly quarantine individually rejected GA001 symbols."""
         if not batch:
             return {}, 0, True
 
@@ -91,9 +117,7 @@ class FNOScanner:
             if not self._is_bad_request(exc):
                 logger.warning(
                     "Groww F&O LTP batch failed; batch_size=%d sample=%s error=%s",
-                    len(batch),
-                    ", ".join(batch[:3]),
-                    exc,
+                    len(batch), ", ".join(batch[:3]), exc,
                 )
                 return {}, 0, False
 
@@ -101,15 +125,9 @@ class FNOScanner:
                 symbol = batch[0]
                 with self._lock:
                     self._invalid_cache.add(symbol)
-                logger.warning("Quarantining Groww GA001 F&O symbol=%s", symbol)
                 return {}, 1, False
 
             if diagnostic_budget[0] <= 0:
-                logger.warning(
-                    "Groww F&O LTP batch rejected; diagnostic budget exhausted; batch_size=%d sample=%s",
-                    len(batch),
-                    ", ".join(batch[:3]),
-                )
                 return {}, 0, False
 
             midpoint = len(batch) // 2
@@ -120,7 +138,6 @@ class FNOScanner:
             else:
                 diagnostic_budget[0] -= 1
                 right_quotes, right_invalid, right_ok = self._fetch_batch(batch[midpoint:], diagnostic_budget)
-
             left_quotes.update(right_quotes)
             return left_quotes, left_invalid + right_invalid, left_ok or right_ok
 
@@ -129,7 +146,18 @@ class FNOScanner:
         if not instruments:
             raise RuntimeError("Groww NSE F&O instrument master returned no active instruments")
 
-        metas = {self._symbol(row): row for row in instruments if self._symbol(row)}
+        metas = {}
+        for row in instruments:
+            symbol = self._symbol(row)
+            if not symbol or not self._quality_allowed(symbol):
+                continue
+            if not self._expiry_allowed(row.get("expiry_date")):
+                continue
+            metas[symbol] = row
+
+        if not metas:
+            raise RuntimeError("Groww NSE F&O universe has no contracts inside the near-term expiry window")
+
         with self._lock:
             invalid_cache = set(self._invalid_cache)
         symbols = [symbol for symbol in metas if symbol not in invalid_cache]
@@ -202,13 +230,6 @@ class FNOScanner:
             self._latest = rankings
             self._checks += 1
             self._errors += invalid_symbols
-
-        if diagnostic_budget[0] < self.MAX_DIAGNOSTIC_REQUESTS:
-            logger.warning(
-                "Groww F&O LTP diagnostics used %d extra requests; GA001_symbols_quarantined=%d",
-                self.MAX_DIAGNOSTIC_REQUESTS - diagnostic_budget[0],
-                len(self._invalid_cache),
-            )
 
         research_event_bus.publish(
             self.OUTPUT_TOPIC,
