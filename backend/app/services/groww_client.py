@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+import httpx
 from growwapi import GrowwAPI
 
 from app.core.config import settings
@@ -15,8 +16,12 @@ class GrowwNotConfiguredError(RuntimeError):
 class GrowwClient:
     """Read-only Groww market-data client for the research phases."""
 
+    API_BASE_URL = "https://api.groww.in"
+    API_VERSION = "1.0"
+
     def __init__(self) -> None:
         self._client: GrowwAPI | None = None
+        self._access_token = ""
 
     @property
     def configured(self) -> bool:
@@ -26,12 +31,13 @@ class GrowwClient:
         if self._client is not None:
             return self._client
         if settings.groww_access_token:
-            self._client = GrowwAPI(settings.groww_access_token)
+            self._access_token = settings.groww_access_token
+            self._client = GrowwAPI(self._access_token)
             return self._client
         if not (settings.groww_api_key and settings.groww_api_secret):
             raise GrowwNotConfiguredError("Groww credentials are not configured")
-        token = GrowwAPI.get_access_token(api_key=settings.groww_api_key, secret=settings.groww_api_secret)
-        self._client = GrowwAPI(token)
+        self._access_token = GrowwAPI.get_access_token(api_key=settings.groww_api_key, secret=settings.groww_api_secret)
+        self._client = GrowwAPI(self._access_token)
         return self._client
 
     def profile(self) -> dict[str, Any]:
@@ -45,8 +51,8 @@ class GrowwClient:
         return value if value.startswith("NSE_") else f"NSE_{value}"
 
     def ltp(self, exchange_symbols: list[str]) -> dict[str, Any]:
-        """Fetch F&O LTPs, rejecting empty/oversized requests locally."""
-        normalized = []
+        """Fetch F&O LTPs using Groww's documented REST live-data endpoint."""
+        normalized: list[str] = []
         seen: set[str] = set()
         for symbol in exchange_symbols:
             value = self._normalize_ltp_symbol(symbol)
@@ -57,24 +63,37 @@ class GrowwClient:
             return {}
         if len(normalized) > 50:
             raise ValueError("Groww LTP supports at most 50 instruments per request")
-        return self._get_client().get_ltp(
-            exchange_trading_symbols=tuple(normalized),
-            segment=GrowwAPI.SEGMENT_FNO,
-        )
+
+        if not self._access_token:
+            self._get_client()
+        if not self._access_token:
+            raise GrowwNotConfiguredError("Groww access token is unavailable")
+
+        params = {
+            "segment": GrowwAPI.SEGMENT_FNO,
+            "exchange_symbols": ",".join(normalized),
+        }
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self._access_token}",
+            "X-API-VERSION": self.API_VERSION,
+        }
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(f"{self.API_BASE_URL}/v1/live-data/ltp", params=params, headers=headers)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Groww LTP HTTP {response.status_code}: {response.text[:300]}")
+        payload = response.json()
+        if isinstance(payload, dict) and isinstance(payload.get("payload"), dict):
+            return payload["payload"]
+        if isinstance(payload, dict):
+            return payload
+        raise RuntimeError("Groww LTP returned an unexpected response")
 
     def option_chain(self, expiry_date: date) -> dict[str, Any]:
-        return self._get_client().get_option_chain(
-            exchange=GrowwAPI.EXCHANGE_NSE,
-            underlying="NIFTY",
-            expiry_date=expiry_date.isoformat(),
-        )
+        return self._get_client().get_option_chain(exchange=GrowwAPI.EXCHANGE_NSE, underlying="NIFTY", expiry_date=expiry_date.isoformat())
 
     def quote(self, trading_symbol: str) -> dict[str, Any]:
-        return self._get_client().get_quote(
-            exchange=GrowwAPI.EXCHANGE_NSE,
-            segment=GrowwAPI.SEGMENT_FNO,
-            trading_symbol=trading_symbol,
-        )
+        return self._get_client().get_quote(exchange=GrowwAPI.EXCHANGE_NSE, segment=GrowwAPI.SEGMENT_FNO, trading_symbol=trading_symbol)
 
     def all_instruments(self) -> Any:
         return self._get_client().get_all_instruments()
@@ -91,22 +110,13 @@ class GrowwClient:
         if active_only and "expiry_date" in df.columns:
             expiry = df["expiry_date"].astype(str).str[:10]
             df = df[(expiry == "") | (expiry == "nan") | (expiry >= date.today().isoformat())]
-        columns = [
-            "exchange", "exchange_token", "trading_symbol", "groww_symbol",
-            "underlying_symbol", "expiry_date", "strike_price", "instrument_type",
-            "lot_size", "tick_size", "segment",
-        ]
+        columns = ["exchange", "exchange_token", "trading_symbol", "groww_symbol", "underlying_symbol", "expiry_date", "strike_price", "instrument_type", "lot_size", "tick_size", "segment"]
         selected = [c for c in columns if c in df.columns]
         if not selected:
             selected = list(df.columns)
         return df[selected].fillna("").to_dict(orient="records")
 
-    def nifty_fno_instruments(
-        self,
-        expiry_date: date | None = None,
-        strike_min: float | None = None,
-        strike_max: float | None = None,
-    ) -> list[dict[str, Any]]:
+    def nifty_fno_instruments(self, expiry_date: date | None = None, strike_min: float | None = None, strike_max: float | None = None) -> list[dict[str, Any]]:
         df = self.all_instruments()
         if df is None or len(df) == 0:
             return []
