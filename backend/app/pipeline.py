@@ -24,6 +24,7 @@ class ResearchPipeline:
     """Coordinate the single-instance, PostgreSQL-backed research pipeline."""
 
     FEED_LIMIT = 1000
+    FEED_STRIKES_PER_SIDE = 5
 
     def __init__(self) -> None:
         self._running = False
@@ -63,37 +64,54 @@ class ResearchPipeline:
 
     @staticmethod
     def _feed_instruments() -> list[dict[str, str]]:
-        rows = groww_client.nifty_fno_instruments()
+        """Build a broad near-ATM option universe for the 1,000-instrument feed cap.
+
+        We deliberately avoid taking the first 1,000 rows of the instrument
+        master, which can heavily bias coverage toward alphabetical symbols.
+        Instead, each active underlying contributes a small near-the-money
+        slice from its nearest expiry. This gives the streaming scanner broad
+        cross-market coverage while staying within Groww's feed subscription cap.
+        """
+        rows = groww_client.fno_instruments(active_only=True)
         today = date.today().isoformat()
-        eligible: list[dict[str, Any]] = []
+        grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             expiry = str(row.get("expiry_date") or "")[:10]
             typ = str(row.get("instrument_type") or "").upper()
+            underlying = str(row.get("underlying_symbol") or "").strip().upper()
             token = str(row.get("exchange_token") or "")
-            if token and expiry >= today and typ in {"CE", "PE"}:
-                eligible.append(row)
+            if not token or not underlying or expiry < today or typ not in {"CE", "PE"}:
+                continue
+            grouped.setdefault(underlying, []).append(row)
 
-        if not eligible:
-            raise RuntimeError("No active NIFTY option contracts available for Groww feed")
+        selected_rows: list[dict[str, Any]] = []
+        for underlying, contracts in sorted(grouped.items()):
+            nearest_expiry = min(str(r.get("expiry_date"))[:10] for r in contracts)
+            nearest = [r for r in contracts if str(r.get("expiry_date"))[:10] == nearest_expiry]
+            strikes = sorted({float(r.get("strike_price") or 0) for r in nearest if float(r.get("strike_price") or 0) > 0})
+            if not strikes:
+                continue
+            center = strikes[len(strikes) // 2]
+            nearby = sorted(strikes, key=lambda strike: (abs(strike - center), strike))[: ResearchPipeline.FEED_STRIKES_PER_SIDE]
+            for strike in nearby:
+                for typ in ("CE", "PE"):
+                    matches = [r for r in nearest if float(r.get("strike_price") or 0) == strike and str(r.get("instrument_type") or "").upper() == typ]
+                    if matches:
+                        selected_rows.append(matches[0])
 
-        nearest = sorted({str(r.get("expiry_date"))[:10] for r in eligible})[0]
-        selected = [r for r in eligible if str(r.get("expiry_date"))[:10] == nearest]
-        selected.sort(
-            key=lambda r: (
-                float(r.get("strike_price") or 0),
-                str(r.get("instrument_type") or ""),
-            )
-        )
+        if not selected_rows:
+            raise RuntimeError("No active NSE option contracts available for Groww live feed")
 
-        # Groww Feed expects exchange/segment/exchange_token, not the REST
-        # LTP API's exchange-prefixed trading symbols.
+        # If the broad selection is below the feed cap, keep it. If it is over
+        # the cap, retain complete underlying slices until the cap is reached.
+        selected_rows = selected_rows[: ResearchPipeline.FEED_LIMIT]
         return [
             {
                 "exchange": "NSE",
                 "segment": "FNO",
-                "exchange_token": str(r["exchange_token"]),
+                "exchange_token": str(row["exchange_token"]),
             }
-            for r in selected[: ResearchPipeline.FEED_LIMIT]
+            for row in selected_rows
         ]
 
     def start(self) -> dict[str, Any]:
@@ -108,8 +126,6 @@ class ResearchPipeline:
             started: list[Any] = []
 
             try:
-                # Start every consumer before the producer so the first market
-                # events are not lost while subscribers initialize.
                 if not flow_engine.running:
                     flow_engine.start()
                     started.append(flow_engine)
@@ -135,8 +151,6 @@ class ResearchPipeline:
                     self._feed_symbols = len(instruments)
                     started.append(feed_service)
 
-                # Feed startup is intentionally asynchronous. A slow Groww
-                # NATS/WebSocket handshake must not roll back healthy consumers.
                 self._running = True
                 return self.stats
             except Exception as exc:
