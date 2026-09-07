@@ -90,8 +90,13 @@ class GrowwClient:
             return payload
         raise RuntimeError("Groww LTP returned an unexpected response")
 
-    def option_chain(self, expiry_date: date) -> dict[str, Any]:
-        return self._get_client().get_option_chain(exchange=GrowwAPI.EXCHANGE_NSE, underlying="NIFTY", expiry_date=expiry_date.isoformat())
+    def option_chain(self, expiry_date: date, underlying: str = "NIFTY") -> dict[str, Any]:
+        """Fetch a complete NSE option chain for a specific underlying/expiry."""
+        return self._get_client().get_option_chain(
+            exchange=GrowwAPI.EXCHANGE_NSE,
+            underlying=str(underlying),
+            expiry_date=expiry_date.isoformat(),
+        )
 
     def quote(self, trading_symbol: str) -> dict[str, Any]:
         return self._get_client().get_quote(exchange=GrowwAPI.EXCHANGE_NSE, segment=GrowwAPI.SEGMENT_FNO, trading_symbol=trading_symbol)
@@ -111,9 +116,6 @@ class GrowwClient:
     def _expiry_window(cls) -> tuple[date, date]:
         today = date.today()
         current_month_start = date(today.year, today.month, 1)
-        # Current month + the next MAX_FNO_MONTHS_AHEAD calendar months.
-        # With MAX_FNO_MONTHS_AHEAD=2 in September, the last allowed expiry
-        # is November 30; December contracts are deliberately excluded.
         target_month_index = current_month_start.month - 1 + cls.MAX_FNO_MONTHS_AHEAD
         target_year = current_month_start.year + target_month_index // 12
         target_month = target_month_index % 12 + 1
@@ -143,7 +145,6 @@ class GrowwClient:
     @staticmethod
     def _quality_mask(df: Any) -> Any:
         symbol = df["trading_symbol"].fillna("").astype(str).str.strip().str.upper()
-        # Groww's instrument master can contain non-tradable/test contracts.
         return symbol.ne("") & ~symbol.str.contains("NSETEST", regex=False, na=False)
 
     def fno_instruments(self, active_only: bool = True) -> list[dict[str, Any]]:
@@ -164,20 +165,9 @@ class GrowwClient:
         if active_only:
             df = df[self._active_expiry_mask(df)]
         columns = [
-            "exchange",
-            "exchange_token",
-            "trading_symbol",
-            "groww_symbol",
-            "underlying_symbol",
-            "expiry_date",
-            "strike_price",
-            "instrument_type",
-            "lot_size",
-            "tick_size",
-            "segment",
-            "is_reserved",
-            "buy_allowed",
-            "sell_allowed",
+            "exchange", "exchange_token", "trading_symbol", "groww_symbol", "underlying_symbol",
+            "expiry_date", "strike_price", "instrument_type", "lot_size", "tick_size", "segment",
+            "is_reserved", "buy_allowed", "sell_allowed",
         ]
         selected = [c for c in columns if c in df.columns]
         return df[selected].fillna("").to_dict(orient="records")
@@ -207,19 +197,9 @@ class GrowwClient:
         if strike_max is not None and "strike_price" in df.columns:
             df = df[df["strike_price"].astype(float) <= strike_max]
         columns = [
-            "exchange",
-            "exchange_token",
-            "trading_symbol",
-            "groww_symbol",
-            "underlying_symbol",
-            "expiry_date",
-            "strike_price",
-            "instrument_type",
-            "lot_size",
-            "tick_size",
-            "is_reserved",
-            "buy_allowed",
-            "sell_allowed",
+            "exchange", "exchange_token", "trading_symbol", "groww_symbol", "underlying_symbol",
+            "expiry_date", "strike_price", "instrument_type", "lot_size", "tick_size",
+            "is_reserved", "buy_allowed", "sell_allowed",
         ]
         selected = [c for c in columns if c in df.columns]
         return df[selected].fillna("").to_dict(orient="records")
