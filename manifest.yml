@@ -1,7 +1,7 @@
 applications:
   - name: option-agent-api
     path: backend
-    memory: 512M
+    memory: 1G
     instances: 1
     buildpacks:
       - python_buildpack
@@ -10,6 +10,8 @@ applications:
     health-check-http-endpoint: /health
     env:
       APP_NAME: option-agent
-      APP_VERSION: 0.2.0
+      APP_VERSION: 0.3.0
       ENVIRONMENT: btp
       LOG_LEVEL: INFO
+      AUTO_START_PIPELINE: true
+      # Set DATABASE_URL and REDIS_URL with cf set-env to your managed services.
