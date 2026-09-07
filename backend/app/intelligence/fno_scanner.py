@@ -99,10 +99,11 @@ class FNOScanner:
 
             if len(batch) == 1:
                 symbol = batch[0]
-                with self._lock:
-                    self._invalid_cache.add(symbol)
-                logger.warning("Caching rejected Groww F&O symbol=%s", symbol)
-                return {}, 1, False
+                logger.warning(
+                    "Groww rejected individual F&O symbol; symbol=%s; it will be retried next scan",
+                    symbol,
+                )
+                return {}, 0, False
 
             if diagnostic_budget[0] <= 0:
                 logger.warning(
