@@ -58,7 +58,7 @@ def _bound_service_url(names: tuple[str, ...]) -> str | None:
 
 class Settings(BaseSettings):
     app_name: str = "option-agent"
-    app_version: str = "0.5.2"
+    app_version: str = "0.5.3"
     environment: str = "dev"
     log_level: str = "INFO"
     database_url: str = ""
