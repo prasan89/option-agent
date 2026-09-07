@@ -19,7 +19,7 @@ def test_version() -> None:
     response = client.get("/version")
     assert response.status_code == 200
     assert response.json()["service"] == "option-agent"
-    assert response.json()["version"] == "0.3.4"
+    assert response.json()["version"] == "0.4.0"
 
 
 def test_system_status_keeps_trading_disabled() -> None:
@@ -57,43 +57,15 @@ def test_agent_tool_definitions() -> None:
 
 
 def test_fno_filters_remove_test_and_non_tradable_contracts() -> None:
-    df = pd.DataFrame(
-        [
-            {
-                "trading_symbol": "021NSETEST36DECFUT",
-                "is_reserved": 0,
-                "buy_allowed": 1,
-                "sell_allowed": 1,
-                "expiry_date": date.today().isoformat(),
-            },
-            {
-                "trading_symbol": "VALID25DECFUT",
-                "is_reserved": 0,
-                "buy_allowed": 1,
-                "sell_allowed": 1,
-                "expiry_date": date.today().isoformat(),
-            },
-            {
-                "trading_symbol": "RESERVED25DECFUT",
-                "is_reserved": 1,
-                "buy_allowed": 1,
-                "sell_allowed": 1,
-                "expiry_date": date.today().isoformat(),
-            },
-            {
-                "trading_symbol": "DISABLED25DECFUT",
-                "is_reserved": 0,
-                "buy_allowed": 0,
-                "sell_allowed": 0,
-                "expiry_date": date.today().isoformat(),
-            },
-        ]
-    )
-
+    df = pd.DataFrame([
+        {"trading_symbol": "021NSETEST36DECFUT", "is_reserved": 0, "buy_allowed": 1, "sell_allowed": 1, "expiry_date": date.today().isoformat()},
+        {"trading_symbol": "VALID25DECFUT", "is_reserved": 0, "buy_allowed": 1, "sell_allowed": 1, "expiry_date": date.today().isoformat()},
+        {"trading_symbol": "RESERVED25DECFUT", "is_reserved": 1, "buy_allowed": 1, "sell_allowed": 1, "expiry_date": date.today().isoformat()},
+        {"trading_symbol": "DISABLED25DECFUT", "is_reserved": 0, "buy_allowed": 0, "sell_allowed": 0, "expiry_date": date.today().isoformat()},
+    ])
     quality = GrowwClient._quality_mask(df)
     tradable = GrowwClient._tradable_mask(df)
     active = GrowwClient._active_expiry_mask(df)
-
     assert quality.tolist() == [False, True, True, True]
     assert tradable.tolist() == [True, True, False, False]
     assert active.tolist() == [True, True, True, True]
@@ -102,9 +74,7 @@ def test_fno_filters_remove_test_and_non_tradable_contracts() -> None:
 def test_fno_expiry_window_excludes_contracts_beyond_two_months() -> None:
     today, max_expiry = GrowwClient._expiry_window()
     current_month_start = date(today.year, today.month, 1)
-
     assert today <= max_expiry
-    assert max_expiry.month != today.month or max_expiry.year == today.year
 
     def add_months(month_start: date, months: int) -> date:
         index = month_start.month - 1 + months
@@ -113,12 +83,9 @@ def test_fno_expiry_window_excludes_contracts_beyond_two_months() -> None:
     allowed_month_start = add_months(current_month_start, 2)
     assert max_expiry.month == allowed_month_start.month
     assert max_expiry.year == allowed_month_start.year
-
-    df = pd.DataFrame(
-        [
-            {"expiry_date": today.isoformat()},
-            {"expiry_date": max_expiry.isoformat()},
-            {"expiry_date": add_months(current_month_start, 3).isoformat()},
-        ]
-    )
+    df = pd.DataFrame([
+        {"expiry_date": today.isoformat()},
+        {"expiry_date": max_expiry.isoformat()},
+        {"expiry_date": add_months(current_month_start, 3).isoformat()},
+    ])
     assert GrowwClient._active_expiry_mask(df).tolist() == [True, True, False]
