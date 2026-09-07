@@ -129,5 +129,38 @@ class ResearchStore:
                 "labels": int(conn.execute("SELECT COUNT(*) FROM dataset_labels").fetchone()[0]),
             }
 
+    def label_summary(self, horizon: int = 5) -> dict[str, Any]:
+        """Return aggregate outcome metrics without loading the full label table."""
+        with self.connect() as conn:
+            row = conn.execute("""
+                SELECT
+                    COUNT(*) AS samples,
+                    COUNT(*) FILTER (WHERE label > 0) AS positive,
+                    COUNT(*) FILTER (WHERE label < 0) AS negative,
+                    COUNT(*) FILTER (WHERE label = 0) AS neutral,
+                    AVG(return_pct) AS avg_return_pct,
+                    AVG(return_pct) FILTER (WHERE return_pct > 0) AS avg_positive_return_pct,
+                    AVG(return_pct) FILTER (WHERE return_pct < 0) AS avg_negative_return_pct,
+                    MAX(return_pct) AS best_return_pct,
+                    MIN(return_pct) AS worst_return_pct
+                FROM dataset_labels WHERE horizon_minutes=%s
+            """, (horizon,)).fetchone()
+        samples = int(row[0] or 0)
+        positive = int(row[1] or 0)
+        return {
+            "horizon_minutes": horizon,
+            "samples": samples,
+            "positive": positive,
+            "negative": int(row[2] or 0),
+            "neutral": int(row[3] or 0),
+            "positive_rate": round(positive / samples * 100.0, 2) if samples else None,
+            "avg_return_pct": round(float(row[4]), 4) if row[4] is not None else None,
+            "avg_positive_return_pct": round(float(row[5]), 4) if row[5] is not None else None,
+            "avg_negative_return_pct": round(float(row[6]), 4) if row[6] is not None else None,
+            "best_return_pct": round(float(row[7]), 4) if row[7] is not None else None,
+            "worst_return_pct": round(float(row[8]), 4) if row[8] is not None else None,
+            "note": "Dataset-label outcomes, not live-trade or strategy P&L performance.",
+        }
+
 
 research_store = ResearchStore()
