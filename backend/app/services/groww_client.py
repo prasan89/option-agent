@@ -37,9 +37,26 @@ class GrowwClient:
     def profile(self) -> dict[str, Any]:
         return self._get_client().get_user_profile()
 
+    @staticmethod
+    def _normalize_ltp_symbol(symbol: str) -> str:
+        """Normalize an NSE F&O trading symbol for Groww's LTP API.
+
+        Groww's live LTP endpoint expects exchange-prefixed symbols such as
+        ``NSE_NIFTY26NOV19250CE``. The instrument master exposes the bare
+        ``trading_symbol`` (``NIFTY26NOV19250CE``), so callers can use either
+        form and this client keeps the API-specific formatting in one place.
+        """
+        value = str(symbol).strip()
+        if not value:
+            return value
+        if value.startswith("NSE_"):
+            return value
+        return f"NSE_{value}"
+
     def ltp(self, exchange_symbols: list[str]) -> dict[str, Any]:
+        normalized = [self._normalize_ltp_symbol(symbol) for symbol in exchange_symbols]
         return self._get_client().get_ltp(
-            exchange_trading_symbols=exchange_symbols,
+            exchange_trading_symbols=normalized,
             segment=GrowwAPI.SEGMENT_FNO,
         )
 
