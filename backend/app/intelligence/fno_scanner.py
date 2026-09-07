@@ -33,6 +33,7 @@ class FNOScanner:
         self._invalid_symbols = 0
         self._errors = 0
         self._previous: dict[str, float] = {}
+        self._invalid_cache: set[str] = set()
         self._lock = threading.Lock()
 
     @property
@@ -52,6 +53,7 @@ class FNOScanner:
                 "successful_batches_last_check": self._successful_batches,
                 "failed_batches_last_check": self._failed_batches,
                 "invalid_symbols_last_check": self._invalid_symbols,
+                "invalid_symbols_cached": len(self._invalid_cache),
                 "errors": self._errors,
                 "latest_rankings": self._latest[:self.MAX_RESULTS],
             }
@@ -71,19 +73,45 @@ class FNOScanner:
     def _symbol(meta: dict[str, Any]) -> str:
         return str(meta.get("trading_symbol") or "").strip()
 
+    @staticmethod
+    def _is_bad_request(exc: Exception) -> bool:
+        return "Groww LTP HTTP 400" in str(exc)
+
     def _fetch_batch(self, batch: list[str]) -> tuple[dict[str, Any], int, bool]:
-        """Fetch one API-sized batch without recursively multiplying requests."""
+        """Fetch LTPs and isolate only symbols rejected by Groww with HTTP 400."""
+        if not batch:
+            return {}, 0, True
+
         try:
             return groww_client.ltp(batch) or {}, 0, True
         except Exception as exc:
-            sample = ", ".join(batch[:3])
+            if not self._is_bad_request(exc):
+                logger.warning(
+                    "Groww F&O LTP batch failed; batch_size=%d sample=%s error=%s",
+                    len(batch),
+                    ", ".join(batch[:3]),
+                    exc,
+                )
+                return {}, 0, False
+
             logger.warning(
-                "Groww F&O LTP batch failed; batch_size=%d sample=%s error=%s",
+                "Groww F&O LTP batch rejected; batch_size=%d sample=%s",
                 len(batch),
-                sample,
-                exc,
+                ", ".join(batch[:3]),
             )
-            return {}, 0, False
+
+        if len(batch) == 1:
+            symbol = batch[0]
+            with self._lock:
+                self._invalid_cache.add(symbol)
+            logger.warning("Caching rejected Groww F&O symbol=%s", symbol)
+            return {}, 1, False
+
+        midpoint = len(batch) // 2
+        left_quotes, left_invalid, left_ok = self._fetch_batch(batch[:midpoint])
+        right_quotes, right_invalid, right_ok = self._fetch_batch(batch[midpoint:])
+        left_quotes.update(right_quotes)
+        return left_quotes, left_invalid + right_invalid, left_ok or right_ok
 
     def _scan_once(self) -> None:
         instruments = groww_client.fno_instruments(active_only=True)
@@ -91,21 +119,26 @@ class FNOScanner:
             raise RuntimeError("Groww NSE F&O instrument master returned no active instruments")
 
         metas = {self._symbol(row): row for row in instruments if self._symbol(row)}
-        symbols = list(metas)
+        with self._lock:
+            invalid_cache = set(self._invalid_cache)
+        symbols = [symbol for symbol in metas if symbol not in invalid_cache]
+
         rankings: list[dict[str, Any]] = []
         scanned = 0
         quotes_received = 0
         successful_batches = 0
         failed_batches = 0
+        invalid_symbols = 0
 
         for start in range(0, len(symbols), self.BATCH_SIZE):
             batch = symbols[start : start + self.BATCH_SIZE]
-            quotes, _, ok = self._fetch_batch(batch)
+            quotes, invalid, ok = self._fetch_batch(batch)
             scanned += len(batch)
+            invalid_symbols += invalid
             if quotes:
                 successful_batches += 1
                 quotes_received += len(quotes)
-            if not ok:
+            if not ok and not quotes:
                 failed_batches += 1
 
             for returned_symbol, raw in quotes.items():
@@ -147,27 +180,27 @@ class FNOScanner:
 
         with self._lock:
             check = self._checks + 1
-            self._symbols_available = len(symbols)
+            self._symbols_available = len(metas)
             self._symbols_scanned = scanned
             self._quotes_received = quotes_received
             self._successful_batches = successful_batches
             self._failed_batches = failed_batches
-            self._invalid_symbols = 0
+            self._invalid_symbols = invalid_symbols
             self._latest = rankings
             self._checks += 1
-            self._errors += failed_batches
+            self._errors += invalid_symbols
 
         research_event_bus.publish(
             self.OUTPUT_TOPIC,
             {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "check": check,
-                "symbols_available": len(symbols),
+                "symbols_available": len(metas),
                 "symbols_scanned": scanned,
                 "quotes_received": quotes_received,
                 "successful_batches": successful_batches,
                 "failed_batches": failed_batches,
-                "invalid_symbols": 0,
+                "invalid_symbols": invalid_symbols,
                 "rankings": rankings,
             },
         )
