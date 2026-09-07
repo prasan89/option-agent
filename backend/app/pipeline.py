@@ -12,6 +12,7 @@ from app.flow.engine import flow_engine
 from app.intelligence.fno_scanner import fno_scanner
 from app.intelligence.score_engine import intelligence_score_engine
 from app.ml.engine import ml_engine
+from app.price_action.scanner import price_action_scanner
 from app.research.store import research_store
 from app.services.groww_client import groww_client
 from app.services.groww_feed import feed_service
@@ -51,6 +52,7 @@ class ResearchPipeline:
             "feed_instruments": len(feed_service.instruments),
             "flow": flow_engine.running,
             "scanner": fno_scanner.running,
+            "price_action": price_action_scanner.running,
             "intelligence_score": intelligence_score_engine.running,
             "dataset": historical_dataset_collector.running,
             "ml": ml_engine.running,
@@ -64,7 +66,6 @@ class ResearchPipeline:
 
     @classmethod
     def _feed_instruments(cls) -> list[dict[str, str]]:
-        """Build a broad near-ATM option universe for the 1,000-instrument feed cap."""
         rows = groww_client.fno_instruments(active_only=True)
         today = date.today().isoformat()
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -85,32 +86,17 @@ class ResearchPipeline:
             if not strikes:
                 continue
             center = strikes[len(strikes) // 2]
-            nearby = sorted(
-                strikes,
-                key=lambda strike: (abs(strike - center), strike),
-            )[: cls.FEED_STRIKES_PER_SIDE]
+            nearby = sorted(strikes, key=lambda strike: (abs(strike - center), strike))[: cls.FEED_STRIKES_PER_SIDE]
             for strike in nearby:
                 for typ in ("CE", "PE"):
-                    matches = [
-                        r for r in nearest
-                        if float(r.get("strike_price") or 0) == strike
-                        and str(r.get("instrument_type") or "").upper() == typ
-                    ]
+                    matches = [r for r in nearest if float(r.get("strike_price") or 0) == strike and str(r.get("instrument_type") or "").upper() == typ]
                     if matches:
                         selected_rows.append(matches[0])
 
         if not selected_rows:
             raise RuntimeError("No active NSE option contracts available for Groww live feed")
-
         selected_rows = selected_rows[: cls.FEED_LIMIT]
-        return [
-            {
-                "exchange": "NSE",
-                "segment": "FNO",
-                "exchange_token": str(row["exchange_token"]),
-            }
-            for row in selected_rows
-        ]
+        return [{"exchange": "NSE", "segment": "FNO", "exchange_token": str(row["exchange_token"])} for row in selected_rows]
 
     def start(self) -> dict[str, Any]:
         with self._lock:
@@ -118,40 +104,29 @@ class ResearchPipeline:
                 return self.stats
             if not groww_client.configured:
                 raise RuntimeError("Groww credentials are not configured")
-
             research_store.init()
             self._last_error = None
             started: list[Any] = []
-
             try:
-                # Consumers are started before the producer so streaming events
-                # are processed immediately after the feed connects.
                 if not flow_engine.running:
-                    flow_engine.start()
-                    started.append(flow_engine)
+                    flow_engine.start(); started.append(flow_engine)
                 if not intelligence_score_engine.running:
-                    intelligence_score_engine.start()
-                    started.append(intelligence_score_engine)
+                    intelligence_score_engine.start(); started.append(intelligence_score_engine)
                 if not historical_dataset_collector.running:
-                    historical_dataset_collector.start()
-                    started.append(historical_dataset_collector)
+                    historical_dataset_collector.start(); started.append(historical_dataset_collector)
                 if not ml_engine.running:
-                    ml_engine.start()
-                    started.append(ml_engine)
+                    ml_engine.start(); started.append(ml_engine)
                 if not signal_monitor.running:
-                    signal_monitor.start()
-                    started.append(signal_monitor)
-
+                    signal_monitor.start(); started.append(signal_monitor)
                 if not feed_service.running and not feed_service.starting:
                     instruments = self._feed_instruments()
                     feed_service.start(instruments)
                     self._feed_symbols = len(instruments)
                     started.append(feed_service)
-
                 if not fno_scanner.running:
-                    fno_scanner.start()
-                    started.append(fno_scanner)
-
+                    fno_scanner.start(); started.append(fno_scanner)
+                if not price_action_scanner.running:
+                    price_action_scanner.start(); started.append(price_action_scanner)
                 self._running = True
                 return self.stats
             except Exception as exc:
@@ -166,6 +141,7 @@ class ResearchPipeline:
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
+            price_action_scanner.stop()
             signal_monitor.stop()
             ml_engine.stop()
             historical_dataset_collector.stop()
