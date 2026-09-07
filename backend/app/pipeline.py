@@ -5,6 +5,8 @@ import threading
 from datetime import date
 from typing import Any
 
+import redis
+
 from app.core.config import settings
 from app.dataset.collector import historical_dataset_collector
 from app.flow.engine import flow_engine
@@ -28,6 +30,7 @@ class ResearchPipeline:
         self._lock = threading.Lock()
         self._last_error: str | None = None
         self._feed_symbols = 0
+        self._redis = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
     @property
     def running(self) -> bool:
@@ -81,27 +84,32 @@ class ResearchPipeline:
                 return self.stats
             if not groww_client.configured:
                 raise RuntimeError("Groww credentials are not configured")
+
+            # Fail fast on infrastructure dependencies before starting market streams.
+            self._redis.ping()
+            signal_monitor.start()
             self._last_error = None
 
-            # Feed first so downstream consumers have input immediately.
-            if not feed_service.running:
-                instruments = self._feed_instruments()
-                feed_service.start(instruments)
-                self._feed_symbols = len(instruments)
-            if not flow_engine.running:
-                flow_engine.start()
-            if not intelligence_score_engine.running:
-                intelligence_score_engine.start()
-            if not fno_scanner.running:
-                fno_scanner.start()
-            if not historical_dataset_collector.running:
-                historical_dataset_collector.start()
-            if not ml_engine.running:
-                ml_engine.start()
-            if not signal_monitor.running:
-                signal_monitor.start()
-            self._running = True
-            return self.stats
+            try:
+                if not feed_service.running:
+                    instruments = self._feed_instruments()
+                    feed_service.start(instruments)
+                    self._feed_symbols = len(instruments)
+                if not flow_engine.running:
+                    flow_engine.start()
+                if not intelligence_score_engine.running:
+                    intelligence_score_engine.start()
+                if not fno_scanner.running:
+                    fno_scanner.start()
+                if not historical_dataset_collector.running:
+                    historical_dataset_collector.start()
+                if not ml_engine.running:
+                    ml_engine.start()
+                self._running = True
+                return self.stats
+            except Exception:
+                signal_monitor.stop()
+                raise
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
@@ -111,8 +119,6 @@ class ResearchPipeline:
             fno_scanner.stop()
             intelligence_score_engine.stop()
             flow_engine.stop()
-            # GrowwFeed has no blocking-stop primitive in the SDK wrapper;
-            # its consumer exits when the SDK connection closes.
             self._running = False
             return self.stats
 
