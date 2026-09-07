@@ -69,13 +69,21 @@ def system_status() -> dict[str, object]:
     from app.dataset.collector import historical_dataset_collector
     from app.ml.engine import ml_engine
 
+    feed_status = (
+        "RUNNING"
+        if feed_service.running
+        else "STARTING"
+        if feed_service.starting
+        else "STOPPED"
+    )
+
     return {
         "status": "UP",
         "service": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
         "market_data": "CONFIGURED" if groww_client.configured else "NOT_CONFIGURED",
-        "groww_feed": "RUNNING" if feed_service.running else "STOPPED",
+        "groww_feed": feed_status,
         "flow_engine": "RUNNING" if flow_engine.running else "STOPPED",
         "flow_intelligence": "READY",
         "fno_scanner": "RUNNING" if fno_scanner.running else "STOPPED",
