@@ -90,6 +90,43 @@ class GrowwClient:
             return payload
         raise RuntimeError("Groww LTP returned an unexpected response")
 
+    def historical_candles(
+        self,
+        groww_symbol: str,
+        start_time: str,
+        end_time: str,
+        segment: str = "FNO",
+        candle_interval: str = "5minute",
+    ) -> dict[str, Any]:
+        """Fetch interval candles from Groww's current historical-candles API."""
+        if not self._access_token:
+            self._get_client()
+        if not self._access_token:
+            raise GrowwNotConfiguredError("Groww access token is unavailable")
+        params = {
+            "exchange": "NSE",
+            "segment": segment,
+            "groww_symbol": str(groww_symbol),
+            "start_time": start_time,
+            "end_time": end_time,
+            "candle_interval": candle_interval,
+        }
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self._access_token}",
+            "X-API-VERSION": self.API_VERSION,
+        }
+        with httpx.Client(timeout=20.0) as client:
+            response = client.get(f"{self.API_BASE_URL}/v1/historical/candles", params=params, headers=headers)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Groww historical candles HTTP {response.status_code}: {response.text[:300]}")
+        payload = response.json()
+        if isinstance(payload, dict) and isinstance(payload.get("payload"), dict):
+            return payload["payload"]
+        if isinstance(payload, dict):
+            return payload
+        raise RuntimeError("Groww historical candles returned an unexpected response")
+
     def option_chain(self, expiry_date: date, underlying: str = "NIFTY") -> dict[str, Any]:
         """Fetch a complete NSE option chain for a specific underlying/expiry."""
         return self._get_client().get_option_chain(
