@@ -98,6 +98,29 @@ class GrowwClient:
     def all_instruments(self) -> Any:
         return self._get_client().get_all_instruments()
 
+    @staticmethod
+    def _active_expiry_mask(df: Any) -> Any:
+        expiry = df["expiry_date"].astype(str).str[:10]
+        today = date.today().isoformat()
+        return expiry.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False) & (expiry >= today)
+
+    @staticmethod
+    def _flag_mask(df: Any, column: str) -> Any:
+        return df[column].astype(str).str.strip().str.lower().isin({"1", "true", "yes"})
+
+    @classmethod
+    def _tradable_mask(cls, df: Any) -> Any:
+        is_reserved = cls._flag_mask(df, "is_reserved")
+        buy_allowed = cls._flag_mask(df, "buy_allowed")
+        sell_allowed = cls._flag_mask(df, "sell_allowed")
+        return ~is_reserved & (buy_allowed | sell_allowed)
+
+    @staticmethod
+    def _quality_mask(df: Any) -> Any:
+        symbol = df["trading_symbol"].fillna("").astype(str).str.strip().str.upper()
+        # Groww's instrument master can contain non-tradable/test contracts.
+        return symbol.ne("") & ~symbol.str.contains("NSETEST", regex=False, na=False)
+
     def fno_instruments(self, active_only: bool = True) -> list[dict[str, Any]]:
         df = self.all_instruments()
         if df is None or len(df) == 0:
@@ -107,13 +130,31 @@ class GrowwClient:
             df = df[df["exchange"].astype(str).str.upper().eq("NSE")]
         if "segment" in df.columns:
             df = df[df["segment"].astype(str).str.upper().eq("FNO")]
-        if active_only and "expiry_date" in df.columns:
-            expiry = df["expiry_date"].astype(str).str[:10]
-            df = df[(expiry == "") | (expiry == "nan") | (expiry >= date.today().isoformat())]
-        columns = ["exchange", "exchange_token", "trading_symbol", "groww_symbol", "underlying_symbol", "expiry_date", "strike_price", "instrument_type", "lot_size", "tick_size", "segment"]
+        required = {"expiry_date", "is_reserved", "buy_allowed", "sell_allowed", "trading_symbol"}
+        missing = required.difference(df.columns)
+        if missing:
+            raise RuntimeError(f"Groww instrument master is missing required fields: {', '.join(sorted(missing))}")
+        df = df[self._quality_mask(df)]
+        df = df[self._tradable_mask(df)]
+        if active_only:
+            df = df[self._active_expiry_mask(df)]
+        columns = [
+            "exchange",
+            "exchange_token",
+            "trading_symbol",
+            "groww_symbol",
+            "underlying_symbol",
+            "expiry_date",
+            "strike_price",
+            "instrument_type",
+            "lot_size",
+            "tick_size",
+            "segment",
+            "is_reserved",
+            "buy_allowed",
+            "sell_allowed",
+        ]
         selected = [c for c in columns if c in df.columns]
-        if not selected:
-            selected = list(df.columns)
         return df[selected].fillna("").to_dict(orient="records")
 
     def nifty_fno_instruments(self, expiry_date: date | None = None, strike_min: float | None = None, strike_max: float | None = None) -> list[dict[str, Any]]:
@@ -121,17 +162,40 @@ class GrowwClient:
         if df is None or len(df) == 0:
             return []
         df = df.copy()
+        if "exchange" in df.columns:
+            df = df[df["exchange"].astype(str).str.upper().eq("NSE")]
         if "segment" in df.columns:
             df = df[df["segment"].astype(str).str.upper().eq("FNO")]
         if "underlying_symbol" in df.columns:
             df = df[df["underlying_symbol"].astype(str).str.upper().eq("NIFTY")]
-        if expiry_date is not None and "expiry_date" in df.columns:
+        required = {"expiry_date", "is_reserved", "buy_allowed", "sell_allowed", "trading_symbol"}
+        missing = required.difference(df.columns)
+        if missing:
+            raise RuntimeError(f"Groww instrument master is missing required fields: {', '.join(sorted(missing))}")
+        df = df[self._quality_mask(df)]
+        df = df[self._tradable_mask(df)]
+        df = df[self._active_expiry_mask(df)]
+        if expiry_date is not None:
             df = df[df["expiry_date"].astype(str).str[:10] == expiry_date.isoformat()]
         if strike_min is not None and "strike_price" in df.columns:
             df = df[df["strike_price"].astype(float) >= strike_min]
         if strike_max is not None and "strike_price" in df.columns:
             df = df[df["strike_price"].astype(float) <= strike_max]
-        columns = ["exchange", "exchange_token", "trading_symbol", "groww_symbol", "underlying_symbol", "expiry_date", "strike_price", "instrument_type", "lot_size", "tick_size"]
+        columns = [
+            "exchange",
+            "exchange_token",
+            "trading_symbol",
+            "groww_symbol",
+            "underlying_symbol",
+            "expiry_date",
+            "strike_price",
+            "instrument_type",
+            "lot_size",
+            "tick_size",
+            "is_reserved",
+            "buy_allowed",
+            "sell_allowed",
+        ]
         selected = [c for c in columns if c in df.columns]
         return df[selected].fillna("").to_dict(orient="records")
 
