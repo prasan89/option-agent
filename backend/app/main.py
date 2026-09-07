@@ -11,6 +11,8 @@ from app.api.ml import router as ml_router
 from app.api.pipeline import router as pipeline_router
 from app.api.scanner import router as scanner_router
 from app.api.signals import router as signals_router
+from app.api.strategy import router as strategy_router
+from app.api.strategy_dashboard import router as strategy_dashboard_router
 from app.core.config import settings
 from app.pipeline import research_pipeline
 from app.signals.monitor import signal_monitor
@@ -29,8 +31,10 @@ app.include_router(scanner_router)
 app.include_router(dataset_router)
 app.include_router(ml_router)
 app.include_router(signals_router)
+app.include_router(strategy_router)
 app.include_router(pipeline_router)
 app.include_router(dashboard_router)
+app.include_router(strategy_dashboard_router)
 app.include_router(agent_router)
 
 
