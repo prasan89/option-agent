@@ -78,10 +78,10 @@ class FNOScanner:
 
     @staticmethod
     def _is_bad_request(exc: Exception) -> bool:
-        return "Groww LTP HTTP 400" in str(exc)
+        return "Groww LTP HTTP 400" in str(exc) and ("GA001" in str(exc) or "Bad Request" in str(exc))
 
     def _fetch_batch(self, batch: list[str], diagnostic_budget: list[int]) -> tuple[dict[str, Any], int, bool]:
-        """Fetch LTPs without unbounded recursive splitting on a bad request."""
+        """Fetch LTPs and quarantine symbols individually rejected by Groww GA001."""
         if not batch:
             return {}, 0, True
 
@@ -99,11 +99,10 @@ class FNOScanner:
 
             if len(batch) == 1:
                 symbol = batch[0]
-                logger.warning(
-                    "Groww rejected individual F&O symbol; symbol=%s; it will be retried next scan",
-                    symbol,
-                )
-                return {}, 0, False
+                with self._lock:
+                    self._invalid_cache.add(symbol)
+                logger.warning("Quarantining Groww GA001 F&O symbol=%s", symbol)
+                return {}, 1, False
 
             if diagnostic_budget[0] <= 0:
                 logger.warning(
@@ -206,7 +205,7 @@ class FNOScanner:
 
         if diagnostic_budget[0] < self.MAX_DIAGNOSTIC_REQUESTS:
             logger.warning(
-                "Groww F&O LTP diagnostics used %d extra requests; invalid_cached=%d",
+                "Groww F&O LTP diagnostics used %d extra requests; GA001_symbols_quarantined=%d",
                 self.MAX_DIAGNOSTIC_REQUESTS - diagnostic_budget[0],
                 len(self._invalid_cache),
             )
