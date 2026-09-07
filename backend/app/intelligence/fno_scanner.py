@@ -136,6 +136,7 @@ class FNOScanner:
 
     @staticmethod
     def _contract_score(change: float | None) -> float:
+        """Score only actual price movement; zero movement must score zero."""
         return round(min(100.0, abs(change or 0.0) * 20.0), 2)
 
     @classmethod
@@ -155,7 +156,11 @@ class FNOScanner:
             top_abs = [abs(float(r.get("change_pct_since_last_scan") or 0)) for r in top]
             weighted = sum(top_abs) / len(top_abs) if top_abs else 0.0
             signed = sum(float(r.get("change_pct_since_last_scan") or 0) for r in top)
-            score = min(100.0, weighted * 35.0 + min(len(active), 20) * 0.75)
+            # Do not award points merely because an underlying has many contracts.
+            # The ranking score represents observed one-minute price activity only.
+            score = min(100.0, weighted * 35.0)
+            if score <= 0:
+                continue
             up = sum(1 for r in active if float(r.get("change_pct_since_last_scan") or 0) > 0)
             down = sum(1 for r in active if float(r.get("change_pct_since_last_scan") or 0) < 0)
             output.append({
