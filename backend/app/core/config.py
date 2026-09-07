@@ -1,25 +1,89 @@
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _first_service_credentials(services: dict[str, Any], names: tuple[str, ...]) -> dict[str, Any] | None:
+    """Find the first CF service binding matching common PostgreSQL/Redis names."""
+    for name in names:
+        entries = services.get(name)
+        if isinstance(entries, list) and entries:
+            for entry in entries:
+                if isinstance(entry, dict) and isinstance(entry.get("credentials"), dict):
+                    return entry["credentials"]
+    for entries in services.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label") or entry.get("name") or "").lower()
+            tags = " ".join(str(x).lower() for x in (entry.get("tags") or []))
+            if any(name in f"{label} {tags}" for name in names):
+                credentials = entry.get("credentials")
+                if isinstance(credentials, dict):
+                    return credentials
+    return None
+
+
+def _credential_url(credentials: dict[str, Any]) -> str | None:
+    for key in ("uri", "url", "jdbcUrl", "jdbc_url"):
+        value = credentials.get(key)
+        if value:
+            return str(value)
+    host = credentials.get("hostname") or credentials.get("host")
+    port = credentials.get("port")
+    database = credentials.get("database") or credentials.get("dbname")
+    username = credentials.get("username") or credentials.get("user")
+    password = credentials.get("password")
+    if host and port and database and username is not None and password is not None:
+        from urllib.parse import quote_plus
+        return f"postgresql://{quote_plus(str(username))}:{quote_plus(str(password))}@{host}:{port}/{database}"
+    return None
+
+
+def _bound_service_url(names: tuple[str, ...]) -> str | None:
+    raw = os.getenv("VCAP_SERVICES", "")
+    if not raw:
+        return None
+    try:
+        services = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(services, dict):
+        return None
+    credentials = _first_service_credentials(services, names)
+    return _credential_url(credentials) if credentials else None
 
 
 class Settings(BaseSettings):
     app_name: str = "option-agent"
-    app_version: str = "0.3.0"
+    app_version: str = "0.3.1"
     environment: str = "dev"
     log_level: str = "INFO"
-    database_url: str = "postgresql+psycopg://option_agent:change-me@localhost:5432/option_agent"
+    database_url: str = ""
     redis_url: str = "redis://localhost:6379/0"
     auto_start_pipeline: bool = True
 
-    # Groww Phase 1. Prefer an access token when available. Otherwise the
-    # SDK can exchange API key + secret for an access token.
     groww_access_token: str = ""
     groww_api_key: str = ""
     groww_api_secret: str = ""
-
-    # Reserved for later AI-agent phases.
     llm_api_key: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+
+    def __init__(self, **values: Any) -> None:
+        super().__init__(**values)
+        if not self.database_url:
+            self.database_url = _bound_service_url(("postgres", "postgresql", "postgres", "elephantsql")) or ""
+        if not os.getenv("REDIS_URL"):
+            bound_redis = _bound_service_url(("redis", "redis-cache", "rediscloud"))
+            if bound_redis:
+                self.redis_url = bound_redis
 
 
 settings = Settings()
