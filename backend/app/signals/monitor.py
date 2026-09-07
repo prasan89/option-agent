@@ -31,7 +31,8 @@ class SignalMonitor:
         self._signals_generated = 0
         self._errors = 0
         self._last_check: str | None = None
-        self._last_id = "0-0"
+        self._last_id = "$"
+        self._db_available = False
         self._lock = threading.Lock()
 
     @property
@@ -49,6 +50,7 @@ class SignalMonitor:
                 "signals_generated": self._signals_generated,
                 "errors": self._errors,
                 "last_check": self._last_check,
+                "database_available": self._db_available,
                 "persisted_signals": self._safe_count(),
             }
 
@@ -87,8 +89,11 @@ class SignalMonitor:
 
     def _safe_count(self) -> int | None:
         try:
-            return signal_store.count()
+            value = signal_store.count()
+            self._db_available = True
+            return value
         except Exception:
+            self._db_available = False
             return None
 
     def run_once(self) -> dict[str, Any]:
@@ -110,6 +115,7 @@ class SignalMonitor:
                     self._errors += 1
                     logger.exception("Failed to build dashboard signal")
         inserted = signal_store.insert_many(candidates)
+        self._db_available = True
         with self._lock:
             self._checks += 1
             self._signals_generated += inserted
@@ -124,6 +130,7 @@ class SignalMonitor:
             except Exception:
                 with self._lock:
                     self._errors += 1
+                self._db_available = False
                 logger.exception("Signal monitor iteration failed")
             wait = max(0.0, self.INTERVAL_SECONDS - (time.monotonic() - started))
             end = time.monotonic() + wait
@@ -135,6 +142,8 @@ class SignalMonitor:
         if self.running:
             raise RuntimeError("Signal monitor is already running")
         signal_store.init()
+        self._db_available = True
+        self._last_id = "$"
         self._running = True
         self._thread = threading.Thread(target=self._run, name="signal-monitor", daemon=True)
         self._thread.start()
