@@ -10,6 +10,7 @@ from app.api.intelligence import router as intelligence_router
 from app.api.intelligence_score import router as intelligence_score_router
 from app.api.ml import router as ml_router
 from app.api.pipeline import router as pipeline_router
+from app.api.price_action import router as price_action_router
 from app.api.scanner import router as scanner_router
 from app.api.signals import router as signals_router
 from app.api.strategy import router as strategy_router
@@ -34,12 +35,10 @@ app.include_router(ml_router)
 app.include_router(signals_router)
 app.include_router(strategy_router)
 app.include_router(pipeline_router)
-# Register the post-market aware dashboard first. FastAPI evaluates path
-# operations in declaration order, so this intentionally supersedes the
-# legacy dashboard implementation without removing its drill-down routes.
 app.include_router(dashboard_v3_router)
 app.include_router(dashboard_router)
 app.include_router(strategy_dashboard_router)
+app.include_router(price_action_router)
 app.include_router(agent_router)
 
 
