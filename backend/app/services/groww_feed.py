@@ -29,6 +29,7 @@ class GrowwFeedService:
         self._thread: threading.Thread | None = None
         self._running = False
         self._initializing = False
+        self._startup_stage = "IDLE"
         self._ready = threading.Event()
         self._startup_error: Exception | None = None
         self._instruments: list[dict[str, str]] = []
@@ -49,11 +50,17 @@ class GrowwFeedService:
         return {
             "running": self.running,
             "initializing": self._initializing,
+            "startup_stage": self._startup_stage,
             "instruments": len(self._instruments),
             "events": self._events,
             "errors": self._errors,
             "startup_error": str(self._startup_error) if self._startup_error else None,
         }
+
+    def _set_startup_stage(self, stage: str) -> None:
+        with self._lock:
+            self._startup_stage = stage
+        logger.info("Groww feed startup stage: %s", stage)
 
     def _publish(self, feed_type: str, meta: dict[str, Any], payload: Any) -> None:
         event = {
@@ -73,30 +80,49 @@ class GrowwFeedService:
     def _run_feed(self, instruments: list[dict[str, str]]) -> None:
         """Create, subscribe and consume the SDK feed on one dedicated thread."""
         try:
+            self._set_startup_stage("GET_CLIENT")
             client = groww_client._get_client()
+            logger.info("Groww feed: GrowwAPI client obtained")
+
+            self._set_startup_stage("CREATE_FEED")
             feed = GrowwFeed(client)
             self._feed = feed
             self._instruments = instruments
+            logger.info(
+                "Groww feed: GrowwFeed created, instruments=%d",
+                len(instruments),
+            )
 
+            self._set_startup_stage("SUBSCRIBE_LTP")
             feed.subscribe_ltp(
                 instruments,
                 on_data_received=lambda meta: self._publish("ltp", meta, feed.get_ltp()),
             )
+            logger.info("Groww feed: LTP subscription completed")
+
+            self._set_startup_stage("SUBSCRIBE_MARKET_DEPTH")
             feed.subscribe_market_depth(
                 instruments,
                 on_data_received=lambda meta: self._publish(
                     "market_depth", meta, feed.get_market_depth()
                 ),
             )
+            logger.info("Groww feed: market-depth subscription completed")
 
+            self._set_startup_stage("READY")
             with self._lock:
                 self._running = True
                 self._initializing = False
                 self._startup_error = None
             self._ready.set()
-            logger.info("Started Groww feed for %d instruments", len(instruments))
+            logger.info(
+                "Groww feed READY; starting consume() for %d instruments",
+                len(instruments),
+            )
 
+            self._set_startup_stage("CONSUME")
             feed.consume()
+            logger.info("Groww feed: consume() returned")
         except Exception as exc:
             with self._lock:
                 self._startup_error = exc
@@ -104,7 +130,10 @@ class GrowwFeedService:
                 self._running = False
                 self._initializing = False
             self._ready.set()
-            logger.exception("Groww feed stopped with an error")
+            logger.exception(
+                "Groww feed stopped during stage %s",
+                self._startup_stage,
+            )
         finally:
             with self._lock:
                 self._running = False
@@ -120,6 +149,7 @@ class GrowwFeedService:
 
         self._ready.clear()
         self._startup_error = None
+        self._startup_stage = "STARTING"
         self._instruments = instruments
         self._initializing = True
         self._thread = threading.Thread(
@@ -134,10 +164,14 @@ class GrowwFeedService:
             with self._lock:
                 self._initializing = False
             raise RuntimeError(
-                f"Groww feed did not initialize within {self.START_TIMEOUT_SECONDS} seconds"
+                "Groww feed did not initialize within "
+                f"{self.START_TIMEOUT_SECONDS} seconds; "
+                f"last startup stage: {self._startup_stage}"
             )
         if self._startup_error:
-            raise RuntimeError(f"Groww feed failed to start: {self._startup_error}") from self._startup_error
+            raise RuntimeError(
+                f"Groww feed failed during {self._startup_stage}: {self._startup_error}"
+            ) from self._startup_error
 
     def stop(self) -> None:
         with self._lock:
