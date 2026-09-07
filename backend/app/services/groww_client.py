@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -18,6 +18,7 @@ class GrowwClient:
 
     API_BASE_URL = "https://api.groww.in"
     API_VERSION = "1.0"
+    MAX_FNO_MONTHS_AHEAD = 2
 
     def __init__(self) -> None:
         self._client: GrowwAPI | None = None
@@ -99,10 +100,34 @@ class GrowwClient:
         return self._get_client().get_all_instruments()
 
     @staticmethod
-    def _active_expiry_mask(df: Any) -> Any:
+    def _month_end(month_start: date) -> date:
+        if month_start.month == 12:
+            next_month = date(month_start.year + 1, 1, 1)
+        else:
+            next_month = date(month_start.year, month_start.month + 1, 1)
+        return next_month - timedelta(days=1)
+
+    @classmethod
+    def _expiry_window(cls) -> tuple[date, date]:
+        today = date.today()
+        current_month_start = date(today.year, today.month, 1)
+        # Current month + the next MAX_FNO_MONTHS_AHEAD calendar months.
+        # With MAX_FNO_MONTHS_AHEAD=2 in September, the last allowed expiry
+        # is November 30; December contracts are deliberately excluded.
+        target_month_index = current_month_start.month - 1 + cls.MAX_FNO_MONTHS_AHEAD
+        target_year = current_month_start.year + target_month_index // 12
+        target_month = target_month_index % 12 + 1
+        return today, cls._month_end(date(target_year, target_month, 1))
+
+    @classmethod
+    def _active_expiry_mask(cls, df: Any) -> Any:
         expiry = df["expiry_date"].astype(str).str[:10]
-        today = date.today().isoformat()
-        return expiry.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False) & (expiry >= today)
+        today, max_expiry = cls._expiry_window()
+        return (
+            expiry.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False)
+            & (expiry >= today.isoformat())
+            & (expiry <= max_expiry.isoformat())
+        )
 
     @staticmethod
     def _flag_mask(df: Any, column: str) -> Any:
