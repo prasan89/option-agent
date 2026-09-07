@@ -19,7 +19,7 @@ def test_version() -> None:
     response = client.get("/version")
     assert response.status_code == 200
     assert response.json()["service"] == "option-agent"
-    assert response.json()["version"] == "0.4.0"
+    assert response.json()["version"] == "0.5.0"
 
 
 def test_system_status_keeps_trading_disabled() -> None:
