@@ -10,7 +10,7 @@ applications:
     health-check-http-endpoint: /health
     env:
       APP_NAME: option-agent
-      APP_VERSION: 0.4.0
+      APP_VERSION: 0.5.0
       ENVIRONMENT: btp
       LOG_LEVEL: INFO
       # Redis is not required. PostgreSQL is discovered automatically from
