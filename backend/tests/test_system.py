@@ -19,7 +19,7 @@ def test_version() -> None:
     response = client.get("/version")
     assert response.status_code == 200
     assert response.json()["service"] == "option-agent"
-    assert response.json()["version"] == "0.5.0"
+    assert response.json()["version"] == "0.5.1"
 
 
 def test_system_status_keeps_trading_disabled() -> None:
@@ -27,6 +27,12 @@ def test_system_status_keeps_trading_disabled() -> None:
     assert response.status_code == 200
     assert response.json()["trading"] == "DISABLED"
     assert response.json()["ai_agent"] == "READY"
+
+
+def test_strategy_routes_are_registered() -> None:
+    dashboard = client.get("/strategy")
+    assert dashboard.status_code == 200
+    assert "SLO Options Research" in dashboard.text
 
 
 def test_groww_status_without_credentials() -> None:
