@@ -1,4 +1,7 @@
-from fastapi import FastAPI
+import logging
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.api.agent import router as agent_router
 from app.api.dashboard import router as dashboard_router
@@ -23,6 +26,8 @@ from app.pipeline import research_pipeline
 from app.price_action.scanner import price_action_scanner
 from app.signals.monitor import signal_monitor
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="AI Options Flow Agent API", version=settings.app_version, description="AI-assisted quantitative options-flow analysis platform.")
 
 app.include_router(groww_router)
@@ -46,13 +51,21 @@ app.include_router(agent_router)
 @app.on_event("startup")
 def startup() -> None:
     configure_logging()
+    logger.info("Option Agent API starting: version=%s environment=%s", settings.app_version, settings.environment)
     research_pipeline.startup()
 
 
 @app.on_event("shutdown")
 def shutdown() -> None:
+    logger.info("Option Agent API shutting down")
     research_pipeline.stop()
     signal_monitor.stop()
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("Unhandled API exception: method=%s path=%s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 @app.get("/health", tags=["system"])
