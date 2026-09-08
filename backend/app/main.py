@@ -17,6 +17,7 @@ from app.api.signals import router as signals_router
 from app.api.strategy import router as strategy_router
 from app.api.strategy_dashboard import router as strategy_dashboard_router
 from app.core.config import settings
+from app.core.logging import configure_logging
 from app.intelligence.historical_session import historical_session_analyzer
 from app.pipeline import research_pipeline
 from app.price_action.scanner import price_action_scanner
@@ -44,6 +45,7 @@ app.include_router(agent_router)
 
 @app.on_event("startup")
 def startup() -> None:
+    configure_logging()
     research_pipeline.startup()
 
 
