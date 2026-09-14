@@ -22,6 +22,7 @@ from app.api.strategy import router as strategy_router
 from app.api.strategy_dashboard import router as strategy_dashboard_router
 from app.core.config import settings
 from app.core.logging import configure_logging
+from app.db.migrations import run_migrations
 from app.intelligence.historical_session import historical_session_analyzer
 from app.pipeline import research_pipeline
 from app.price_action.scanner import price_action_scanner
@@ -54,6 +55,7 @@ app.include_router(agent_router)
 def startup() -> None:
     configure_logging()
     logger.info("Option Agent API starting: version=%s environment=%s", settings.app_version, settings.environment)
+    run_migrations()
     research_pipeline.startup()
 
 
