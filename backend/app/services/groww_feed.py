@@ -17,12 +17,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class GrowwFeedService:
-    """Read-only Groww stream publisher with a REST LTP safety net.
-
-    GrowwFeed is the primary source. During market hours, if the WebSocket has
-    not delivered a tick recently, the service falls back to Groww's documented
-    LTP REST endpoint so the research pipeline can continue producing events.
-    """
+    """Read-only Groww stream publisher with a REST LTP safety net."""
 
     TOPIC = "market.raw"
     START_TIMEOUT_SECONDS = 5
@@ -66,7 +61,7 @@ class GrowwFeedService:
     def stats(self) -> dict[str, Any]:
         now = time.time()
         with self._lock:
-            last_event_age = None if self._last_event_at is None else round(max(0.0, now - self._last_event_at), 1)
+            age = None if self._last_event_at is None else round(max(0.0, now - self._last_event_at), 1)
             return {
                 "running": self.running,
                 "starting": self.starting,
@@ -77,7 +72,7 @@ class GrowwFeedService:
                 "fallback_events": self._fallback_events,
                 "fallback_requests": self._fallback_requests,
                 "fallback_errors": self._fallback_errors,
-                "last_event_age_seconds": last_event_age,
+                "last_event_age_seconds": age,
                 "errors": self._errors,
                 "startup_error": str(self._startup_error) if self._startup_error else None,
             }
@@ -86,6 +81,24 @@ class GrowwFeedService:
     def _market_open(cls) -> bool:
         now = datetime.now(IST)
         return now.weekday() < 5 and cls.MARKET_OPEN <= now.time() <= cls.MARKET_CLOSE
+
+    @classmethod
+    def _seconds_until_market_open(cls) -> float:
+        now = datetime.now(IST)
+        if now.weekday() < 5 and now.time() < cls.MARKET_OPEN:
+            target = datetime.combine(now.date(), cls.MARKET_OPEN, tzinfo=IST)
+        else:
+            days = 1
+            if now.weekday() == 4 or now.weekday() >= 5:
+                days = (7 - now.weekday()) % 7 or 7
+            target_date = now.date()
+            while days > 0:
+                target_date = target_date.fromordinal(target_date.toordinal() + 1)
+                days -= 1
+                if target_date.weekday() < 5:
+                    break
+            target = datetime.combine(target_date, cls.MARKET_OPEN, tzinfo=IST)
+        return max(1.0, (target - now).total_seconds())
 
     def _stage(self, stage: str) -> None:
         with self._lock:
@@ -116,21 +129,17 @@ class GrowwFeedService:
     def _poll_rest_ltp(self) -> None:
         while self.running:
             try:
-                # There is no meaningful live LTP stream outside the NSE session.
                 if not self._market_open():
                     time.sleep(self.FALLBACK_INTERVAL_SECONDS)
                     continue
-
                 with self._lock:
                     last_event = self._last_event_at
                 if last_event is not None and time.time() - last_event < self.FALLBACK_AFTER_SECONDS:
                     time.sleep(self.FALLBACK_INTERVAL_SECONDS)
                     continue
-
                 symbols = [str(row.get("trading_symbol") or "") for row in self._instruments]
-                symbols = [symbol for symbol in symbols if symbol]
                 for start in range(0, len(symbols), self.FALLBACK_BATCH_SIZE):
-                    batch = symbols[start : start + self.FALLBACK_BATCH_SIZE]
+                    batch = [s for s in symbols[start : start + self.FALLBACK_BATCH_SIZE] if s]
                     if not batch:
                         continue
                     with self._lock:
@@ -152,22 +161,10 @@ class GrowwFeedService:
                             continue
                         if not token or ltp <= 0:
                             continue
-                        fallback_payload = {
-                            "NSE": {
-                                "FNO": {
-                                    token: {"tsInMillis": now_ms, "ltp": ltp}
-                                }
-                            }
-                        }
                         self._publish(
                             "ltp",
-                            {
-                                "exchange": "NSE",
-                                "segment": "FNO",
-                                "feed_type": "ltp",
-                                "feed_key": token,
-                            },
-                            fallback_payload,
+                            {"exchange": "NSE", "segment": "FNO", "feed_type": "ltp", "feed_key": token},
+                            {"NSE": {"FNO": {token: {"tsInMillis": now_ms, "ltp": ltp}}}},
                             fallback=True,
                         )
             except Exception as exc:
@@ -178,51 +175,40 @@ class GrowwFeedService:
 
     def _run_feed(self, instruments: list[dict[str, str]]) -> None:
         try:
+            self._instruments = instruments
+            self._stage("WAIT_MARKET_OPEN")
+            while not self._market_open():
+                if not self._running:
+                    return
+                wait = min(60.0, self._seconds_until_market_open())
+                logger.info("Groww websocket deferred until NSE market open; sleeping %.0fs", wait)
+                time.sleep(wait)
+
             self._stage("GET_CLIENT")
             client = groww_client._get_client()
-
             self._stage("CREATE_FEED")
             feed = GrowwFeed(client)
             self._feed = feed
-            self._instruments = instruments
 
-            # Start the fallback independently so a slow/hung websocket
-            # subscription cannot leave the entire research pipeline blind.
             with self._lock:
                 self._running = True
                 self._initializing = True
                 self._startup_error = None
-            self._fallback_thread = threading.Thread(
-                target=self._poll_rest_ltp,
-                name="groww-ltp-fallback",
-                daemon=True,
-            )
+            self._fallback_thread = threading.Thread(target=self._poll_rest_ltp, name="groww-ltp-fallback", daemon=True)
             self._fallback_thread.start()
 
             sdk_instruments = [
-                {
-                    "exchange": str(row["exchange"]),
-                    "segment": str(row["segment"]),
-                    "exchange_token": str(row["exchange_token"]),
-                }
+                {"exchange": str(row["exchange"]), "segment": str(row["segment"]), "exchange_token": str(row["exchange_token"])}
                 for row in instruments
             ]
-
             self._stage("SUBSCRIBE_LTP")
-            feed.subscribe_ltp(
-                sdk_instruments,
-                on_data_received=lambda meta: self._publish("ltp", meta, feed.get_ltp()),
-            )
+            feed.subscribe_ltp(sdk_instruments, on_data_received=lambda meta: self._publish("ltp", meta, feed.get_ltp()))
 
-            # Depth is useful enrichment but must never prevent LTP from
-            # becoming operational. A depth subscription failure is isolated.
             self._stage("SUBSCRIBE_MARKET_DEPTH")
             try:
                 feed.subscribe_market_depth(
                     sdk_instruments,
-                    on_data_received=lambda meta: self._publish(
-                        "market_depth", meta, feed.get_market_depth()
-                    ),
+                    on_data_received=lambda meta: self._publish("market_depth", meta, feed.get_market_depth()),
                 )
             except Exception:
                 with self._lock:
@@ -236,7 +222,6 @@ class GrowwFeedService:
                 self._startup_stage = "READY"
             self._ready.set()
             logger.info("Groww feed READY for %d instruments", len(instruments))
-
             self._stage("CONSUME")
             feed.consume()
             logger.info("Groww feed consume() returned")
@@ -260,40 +245,25 @@ class GrowwFeedService:
             raise ValueError("At least one instrument is required")
         if not groww_client.configured:
             raise RuntimeError("Groww credentials are not configured")
-
         self._ready.clear()
         self._startup_error = None
         self._startup_stage = "STARTING"
         self._instruments = instruments
         self._initializing = True
-        self._thread = threading.Thread(
-            target=self._run_feed,
-            args=(instruments,),
-            name="groww-feed",
-            daemon=True,
-        )
+        self._running = True
+        self._thread = threading.Thread(target=self._run_feed, args=(instruments,), name="groww-feed", daemon=True)
         self._thread.start()
-
         if not self._ready.wait(timeout=self.START_TIMEOUT_SECONDS):
-            logger.warning(
-                "Groww feed is still initializing after %ss; stage=%s. "
-                "REST LTP fallback remains available during market hours.",
-                self.START_TIMEOUT_SECONDS,
-                self._startup_stage,
-            )
+            logger.info("Groww feed deferred/initializing after %ss; stage=%s", self.START_TIMEOUT_SECONDS, self._startup_stage)
             return
-
         if self._startup_error:
-            raise RuntimeError(
-                f"Groww feed failed during stage {self._startup_stage}: {self._startup_error}"
-            ) from self._startup_error
+            raise RuntimeError(f"Groww feed failed during stage {self._startup_stage}: {self._startup_error}") from self._startup_error
 
     def stop(self) -> None:
         with self._lock:
             self._running = False
             self._initializing = False
-        # GrowwFeed.consume is SDK-blocking and has no reliable blocking-stop
-        # primitive in the current SDK wrapper. Daemon threads exit with the app process.
+        # GrowwFeed.consume is SDK-blocking and has no reliable blocking-stop primitive in the current SDK wrapper.
 
 
 feed_service = GrowwFeedService()
