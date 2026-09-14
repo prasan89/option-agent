@@ -9,6 +9,7 @@ from app.api.dashboard_shell import router as dashboard_shell_router
 from app.api.dashboard_v3 import router as dashboard_v3_router
 from app.api.dataset import router as dataset_router
 from app.api.flow import router as flow_router
+from app.api.fno_engine import router as fno_engine_router
 from app.api.groww import router as groww_router
 from app.api.intelligence import router as intelligence_router
 from app.api.intelligence_score import router as intelligence_score_router
@@ -35,6 +36,7 @@ app.include_router(flow_router)
 app.include_router(intelligence_router)
 app.include_router(intelligence_score_router)
 app.include_router(scanner_router)
+app.include_router(fno_engine_router)
 app.include_router(dataset_router)
 app.include_router(ml_router)
 app.include_router(signals_router)
@@ -87,6 +89,7 @@ def system_status() -> dict[str, object]:
     from app.intelligence.score_engine import intelligence_score_engine
     from app.dataset.collector import historical_dataset_collector
     from app.ml.engine import ml_engine
+    from app.strategy.fno_engine import fno_opportunity_engine
 
     feed_status = "RUNNING" if feed_service.running else "STARTING" if feed_service.starting else "STOPPED"
     return {
@@ -109,6 +112,7 @@ def system_status() -> dict[str, object]:
         "persisted_signals": signal_monitor.stats["persisted_signals"],
         "historical_session": historical_session_analyzer.stats,
         "pipeline": research_pipeline.stats,
+        "fno_opportunity_engine": fno_opportunity_engine.status(),
         "ai_agent": "READY",
         "trading": "DISABLED",
     }
