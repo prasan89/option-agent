@@ -15,20 +15,16 @@ def _iv_decimal(value: Any) -> float | None:
         iv = float(value)
     except (TypeError, ValueError):
         return None
-    # Groww option-chain Greeks expose IV as a percentage; SLO uses decimal IV.
     return iv / 100.0 if iv > 1.0 else iv
 
 
 def candidate_score(row: dict[str, Any], direction_score: float) -> dict[str, float]:
-    """SLO Options V1 candidate scoring adapted to option-agent live-feed rows."""
     premium = float(row.get("mid") or row.get("ltp") or 0)
     bid = float(row.get("best_bid") or 0)
     ask = float(row.get("best_ask") or 0)
     spread_pct = ((ask - bid) / premium) if premium > 0 and ask >= bid else 1.0
     theta = abs(float(row.get("theta") or 0))
     theta_ratio = theta / max(premium, 0.01)
-    # The live feed currently does not provide a comparable underlying HV series,
-    # so preserve the SLO baseline behavior when IV/HV is unavailable.
     volatility_score = 50.0
     liquidity_score = _clamp(100.0 * (1.0 - spread_pct / 0.10))
     theta_score = _clamp(100.0 * (1.0 - theta_ratio / 0.10))
@@ -76,7 +72,6 @@ def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]],
                 dte = (date.fromisoformat(expiry_text) - date.today()).days
             except ValueError:
                 dte = 0
-            # Preserve the SLO V1 7-30 day research window.
             if dte < 7 or dte > 30:
                 continue
             if int(row.get("volume") or 0) < 1000 or int(row.get("open_interest") or 0) < 5000:
@@ -91,7 +86,9 @@ def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]],
             if scores["total_score"] < min_score:
                 continue
             stop = premium * 0.65
-            target = premium * 1.50
+            # Research baseline: target is 1.8x premium, giving ~2.3R against
+            # the 35% premium stop. Live performance must be validated.
+            target = premium * 1.80
             strike = float(row.get("strike_price") or 0)
             breakeven = strike + premium if option_type == "CE" else strike - premium
             results.append({
@@ -118,7 +115,7 @@ def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]],
                 "open_interest": row.get("open_interest"),
                 "data_sources": row.get("data_sources") or [],
                 **scores,
-                "reason": "Flow direction agrees with option type; SLO candidate score clears the V1 threshold.",
+                "reason": "Flow direction agrees with option type; candidate clears the research score and liquidity filters.",
                 "research_only": True,
             })
 
@@ -130,5 +127,5 @@ def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]],
         "method": "SLO_OPTIONS_V1_LIVE_ADAPTER",
         "research_only": True,
         "trading": "DISABLED",
-        "note": "SLO scoring is applied to option-agent live-feed/enrichment data. Direction is sourced from the live option-flow activity ranking; this is not a validated trading edge.",
+        "note": "SLO scoring is applied to option-agent live-feed/enrichment data. Direction is sourced from live option-flow activity ranking; this is not a validated trading edge.",
     }
