@@ -16,7 +16,7 @@ class RiskConfig:
     max_open_positions: int = 7
     max_sector_positions: int = 2
     target_profit_per_position: float = 10_000.0
-    min_score: float = 75.0
+    min_score: float = 65.0
     min_rr: float = 1.8
 
 
@@ -43,8 +43,8 @@ class Candidate:
 class FNOOpportunityEngine:
     """Market-wide candidate ranking and portfolio-risk guard.
 
-    This module deliberately does not place orders. It converts scanner rows into
-    ranked research candidates and applies portfolio-level constraints.
+    Research-only: this component never places broker orders. It ranks the
+    existing scanner candidates and applies capital, concentration and risk caps.
     """
 
     def __init__(self, config: RiskConfig | None = None) -> None:
@@ -62,11 +62,10 @@ class FNOOpportunityEngine:
             return default
 
     def score_row(self, row: dict[str, Any]) -> float:
-        """Normalize existing intelligence into a 0-100 opportunity score.
-
-        If richer price-action fields are present they receive additional weight;
-        absent fields are neutral rather than fabricated.
-        """
+        # Preserve the upstream SLO score when present. Otherwise calculate a
+        # conservative score from available scanner features without inventing data.
+        if row.get("total_score") is not None:
+            return round(max(0.0, min(100.0, self._num(row, "total_score"))), 2)
         base = abs(self._num(row, "intelligence_score", self._num(row, "activity_score")))
         flow = min(100.0, base)
         momentum = min(100.0, abs(self._num(row, "momentum_score", 50.0)))
@@ -81,23 +80,19 @@ class FNOOpportunityEngine:
             return None
         direction = "BULLISH" if direction in {"BULLISH", "UP"} else "BEARISH"
         option_type = str(row.get("option_type") or row.get("instrument_type") or "").upper()
-        if option_type not in {"CE", "PE"}:
-            return None
-        if (direction == "BULLISH") != (option_type == "CE"):
+        if option_type not in {"CE", "PE"} or ((direction == "BULLISH") != (option_type == "CE")):
             return None
         score = self.score_row(row)
         premium = self._num(row, "premium", self._num(row, "mid", self._num(row, "ltp")))
         if premium <= 0 or score < self.config.min_score:
             return None
         stop = self._num(row, "stop_premium", premium * 0.65)
-        target = self._num(row, "target_premium", premium * 1.50)
+        target = self._num(row, "target_premium", premium * 1.80)
         risk_per_unit = max(0.01, premium - stop)
         reward_per_unit = max(0.0, target - premium)
         rr = reward_per_unit / risk_per_unit
         if rr < self.config.min_rr:
             return None
-        # Prefer the configured rupee risk budget; option lot size is supplied by
-        # the live instrument row and is never guessed from a hard-coded lot size.
         lot_size = max(1, int(self._num(row, "lot_size", 1)))
         units = floor(self.config.risk_per_trade / risk_per_unit)
         quantity = (units // lot_size) * lot_size
