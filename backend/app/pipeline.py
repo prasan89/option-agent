@@ -86,17 +86,40 @@ class ResearchPipeline:
             if not strikes:
                 continue
             center = strikes[len(strikes) // 2]
-            nearby = sorted(strikes, key=lambda strike: (abs(strike - center), strike))[: cls.FEED_STRIKES_PER_SIDE]
+            nearby = sorted(
+                strikes,
+                key=lambda strike: (abs(strike - center), strike),
+            )[: cls.FEED_STRIKES_PER_SIDE]
             for strike in nearby:
                 for typ in ("CE", "PE"):
-                    matches = [r for r in nearest if float(r.get("strike_price") or 0) == strike and str(r.get("instrument_type") or "").upper() == typ]
+                    matches = [
+                        r for r in nearest
+                        if float(r.get("strike_price") or 0) == strike
+                        and str(r.get("instrument_type") or "").upper() == typ
+                    ]
                     if matches:
                         selected_rows.append(matches[0])
 
         if not selected_rows:
             raise RuntimeError("No active NSE option contracts available for Groww live feed")
         selected_rows = selected_rows[: cls.FEED_LIMIT]
-        return [{"exchange": "NSE", "segment": "FNO", "exchange_token": str(row["exchange_token"])} for row in selected_rows]
+        # Keep the trading symbol and instrument metadata alongside the SDK's
+        # required exchange/segment/token fields. The feed service uses these
+        # fields for the REST LTP fallback if the websocket is silent.
+        return [
+            {
+                "exchange": "NSE",
+                "segment": "FNO",
+                "exchange_token": str(row["exchange_token"]),
+                "trading_symbol": str(row.get("trading_symbol") or ""),
+                "underlying_symbol": str(row.get("underlying_symbol") or ""),
+                "instrument_type": str(row.get("instrument_type") or ""),
+                "expiry_date": str(row.get("expiry_date") or ""),
+                "strike_price": str(row.get("strike_price") or ""),
+                "lot_size": str(row.get("lot_size") or ""),
+            }
+            for row in selected_rows
+        ]
 
     def start(self) -> dict[str, Any]:
         with self._lock:
