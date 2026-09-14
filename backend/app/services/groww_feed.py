@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime, time as dt_time, timezone
+from datetime import datetime, time as dt_time, timezone, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -88,16 +88,13 @@ class GrowwFeedService:
         if now.weekday() < 5 and now.time() < cls.MARKET_OPEN:
             target = datetime.combine(now.date(), cls.MARKET_OPEN, tzinfo=IST)
         else:
-            days = 1
-            if now.weekday() == 4 or now.weekday() >= 5:
-                days = (7 - now.weekday()) % 7 or 7
-            target_date = now.date()
-            while days > 0:
-                target_date = target_date.fromordinal(target_date.toordinal() + 1)
-                days -= 1
-                if target_date.weekday() < 5:
+            for offset in range(1, 8):
+                candidate = now + timedelta(days=offset)
+                if candidate.weekday() < 5:
+                    target = datetime.combine(candidate.date(), cls.MARKET_OPEN, tzinfo=IST)
                     break
-            target = datetime.combine(target_date, cls.MARKET_OPEN, tzinfo=IST)
+            else:
+                target = datetime.combine(now.date() + timedelta(days=1), cls.MARKET_OPEN, tzinfo=IST)
         return max(1.0, (target - now).total_seconds())
 
     def _stage(self, stage: str) -> None:
