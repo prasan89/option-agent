@@ -5,8 +5,8 @@ from fastapi.responses import JSONResponse
 
 from app.api.agent import router as agent_router
 from app.api.dashboard import router as dashboard_router
+from app.api.dashboard_fixed import router as dashboard_fixed_router
 from app.api.dashboard_shell import router as dashboard_shell_router
-from app.api.dashboard_v3 import router as dashboard_v3_router
 from app.api.dataset import router as dataset_router
 from app.api.flow import router as flow_router
 from app.api.fno_engine import router as fno_engine_router
@@ -46,7 +46,7 @@ app.include_router(signals_router)
 app.include_router(strategy_router)
 app.include_router(pipeline_router)
 app.include_router(dashboard_shell_router)
-app.include_router(dashboard_v3_router)
+app.include_router(dashboard_fixed_router)
 app.include_router(dashboard_router)
 app.include_router(strategy_dashboard_router)
 app.include_router(price_action_router)
