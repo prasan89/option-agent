@@ -15,7 +15,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class PriceActionScanner:
-    """Research-only price-action scanner using Groww daily and 5-minute candles."""
+    """Research-only price-action scanner using completed daily and live 5-minute candles."""
 
     MIN_SCORE = 65.0
     HISTORY_DAYS = 180
@@ -94,6 +94,19 @@ class PriceActionScanner:
         return out
 
     @staticmethod
+    def _candle_date(ts: str) -> str | None:
+        text = str(ts or "")[:10]
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return None
+
+    @classmethod
+    def _completed_daily_rows(cls, rows: list[dict[str, float | str]], today: str) -> list[dict[str, float | str]]:
+        """Exclude today's still-forming daily candle from structural analysis."""
+        return [row for row in rows if cls._candle_date(str(row.get("ts") or "")) not in {None, today}]
+
+    @staticmethod
     def _ema(values: list[float], period: int) -> float:
         if not values:
             return 0.0
@@ -154,7 +167,7 @@ class PriceActionScanner:
             "ema50": round(ema50, 2),
             "volume_ratio": round(vol_ratio, 2),
             "fib_level": None,
-            "reason": f"{pattern}; waiting for 5-minute trigger and volume confirmation.",
+            "reason": f"{pattern}; based on completed daily candles; waiting for 5-minute trigger and volume confirmation.",
         }
 
     def _universe(self) -> list[str]:
@@ -179,7 +192,8 @@ class PriceActionScanner:
                 payload = groww_client.historical_candles(
                     f"NSE-{underlying}", f"{start} 09:15:00", f"{end} 15:40:00", "CASH", "1day"
                 )
-                rows = self._parse_candles(payload)
+                raw_rows = self._parse_candles(payload)
+                rows = self._completed_daily_rows(raw_rows, today.isoformat())
                 with self._lock:
                     self._daily_requests += 1
                 candidate = self._daily_setup(underlying, rows)
@@ -276,11 +290,11 @@ class PriceActionScanner:
                 if crossed and vol_ratio >= 1.0:
                     signal["status"] = "CONFIRMED"
                     signal["trigger_state"] = "TRIGGERED TODAY"
-                    signal["reason"] = f"{candidate['pattern']}; 5-minute close crossed trigger with volume ratio {vol_ratio:.2f}x."
+                    signal["reason"] = f"{candidate['pattern']}; completed-daily trigger crossed by 5-minute close with volume ratio {vol_ratio:.2f}x."
                 else:
                     signal["status"] = "SETUP"
                     signal["trigger_state"] = "WAITING_5M_CONFIRMATION"
-                    signal["reason"] = f"{candidate['pattern']}; current 5-minute price has not confirmed the trigger yet."
+                    signal["reason"] = f"{candidate['pattern']}; completed-daily trigger not confirmed by the latest 5-minute candle."
                 signals.append(signal)
             except Exception as exc:
                 with self._lock:
