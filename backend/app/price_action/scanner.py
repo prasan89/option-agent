@@ -209,7 +209,7 @@ class PriceActionScanner:
                 "buy_above": round(level, 4) if direction == "BUY" else None,
                 "sell_below": round(level, 4) if direction == "SELL" else None,
                 "trigger_state": "HISTORICAL_5M_CONFIRMED", "price": close, "close_5min": close,
-                "vol_ratio_5min": metrics["volume_ratio"], "ema9": metrics["ema9"], "ema20": metrics["ema20"},
+                "vol_ratio_5min": metrics["volume_ratio"], "ema9": metrics["ema9"], "ema20": metrics["ema20"],
                 "ema50": metrics["ema50"], "vwap": metrics["vwap"], "fib_level": None,
                 "stop_loss": round(stop, 4), "target": round(target, 4), "rr": 2.0,
                 "time": str(current["ts"]), "created_at": dt.isoformat(),
