@@ -18,9 +18,6 @@ class PriceActionScanner:
     """Research-only price-action scanner using Groww daily and 5-minute candles."""
 
     MIN_SCORE = 65.0
-    # Groww's current backtesting documentation limits 1-day candle requests
-    # to 180 days. EMA20/EMA50 and 20-day range analysis do not require a year
-    # of history, so stay within that documented request limit.
     HISTORY_DAYS = 180
     MAX_UNDERLYINGS = 50
     MIN_DAILY_BARS = 80
@@ -35,7 +32,7 @@ class PriceActionScanner:
         self._cache: dict[str, dict[str, Any]] = {}
         self._cache_date: str | None = None
         self._signals: list[dict[str, Any]] = []
-        self._alerted: set[tuple[str, str, float, str]] = set()
+        self._alerted: set[tuple[str, str, float, str, str]] = set()
         self._checks = 0
         self._daily_requests = 0
         self._intraday_requests = 0
@@ -123,25 +120,13 @@ class PriceActionScanner:
         support = min(lows[-21:-1])
 
         if close > resistance:
-            direction = "BUY"
-            pattern = "DAILY BREAKOUT"
-            level = resistance
-            pattern_score = 78.0
+            direction, pattern, level, pattern_score = "BUY", "DAILY BREAKOUT", resistance, 78.0
         elif close < support:
-            direction = "SELL"
-            pattern = "DAILY BREAKDOWN"
-            level = support
-            pattern_score = 78.0
+            direction, pattern, level, pattern_score = "SELL", "DAILY BREAKDOWN", support, 78.0
         elif close > ema20 > ema50:
-            direction = "BUY"
-            pattern = "BULLISH MOMENTUM SETUP"
-            level = resistance
-            pattern_score = 68.0
+            direction, pattern, level, pattern_score = "BUY", "BULLISH MOMENTUM SETUP", resistance, 68.0
         elif close < ema20 < ema50:
-            direction = "SELL"
-            pattern = "BEARISH MOMENTUM SETUP"
-            level = support
-            pattern_score = 68.0
+            direction, pattern, level, pattern_score = "SELL", "BEARISH MOMENTUM SETUP", support, 68.0
         else:
             up_move = (close - closes[-10]) / max(abs(closes[-10]), 1e-9)
             down_move = (closes[-10] - close) / max(abs(closes[-10]), 1e-9)
@@ -212,12 +197,16 @@ class PriceActionScanner:
             self._setups = len(cache)
         logger.info("Price-action daily cache built: underlyings=%s requests=%s errors=%s", len(cache), self._daily_requests, self._errors)
 
-    def _emit(self, signal: dict[str, Any]) -> None:
+    def _emit(self, signal: dict[str, Any]) -> bool:
         now = datetime.now(IST)
-        key = (signal["underlying"], signal["signal"], round(float(signal["trigger_level"]), 4), now.date().isoformat())
+        status = str(signal.get("status") or "SETUP")
+        key = (
+            signal["underlying"], signal["signal"], round(float(signal["trigger_level"]), 4),
+            now.date().isoformat(), status,
+        )
         with self._lock:
             if key in self._alerted:
-                return
+                return False
             self._alerted.add(key)
         item = {
             **signal,
@@ -230,7 +219,7 @@ class PriceActionScanner:
         }
         try:
             signal_store.insert_many([{
-                "signal_key": f"PRICE_ACTION:{key[0]}:{key[1]}:{key[2]}:{key[3]}",
+                "signal_key": f"PRICE_ACTION:{key[0]}:{key[1]}:{key[2]}:{key[3]}:{key[4]}",
                 "created_at": now,
                 "symbol": item["symbol"],
                 "underlying": item["underlying"],
@@ -250,6 +239,7 @@ class PriceActionScanner:
             self._signals.insert(0, item)
             self._signals = self._signals[:50]
             self._last_signal = now.isoformat()
+        return True
 
     def _scan_once(self) -> None:
         today = datetime.now(IST).date().isoformat()
@@ -287,14 +277,11 @@ class PriceActionScanner:
                     signal["status"] = "CONFIRMED"
                     signal["trigger_state"] = "TRIGGERED TODAY"
                     signal["reason"] = f"{candidate['pattern']}; 5-minute close crossed trigger with volume ratio {vol_ratio:.2f}x."
-                    with self._lock:
-                        self._triggered += 1
-                    signals.append(signal)
-                elif candidate["pattern"] in {"DAILY BREAKOUT", "DAILY BREAKDOWN"}:
+                else:
                     signal["status"] = "SETUP"
                     signal["trigger_state"] = "WAITING_5M_CONFIRMATION"
                     signal["reason"] = f"{candidate['pattern']}; current 5-minute price has not confirmed the trigger yet."
-                    signals.append(signal)
+                signals.append(signal)
             except Exception as exc:
                 with self._lock:
                     self._intraday_requests += 1
@@ -302,7 +289,10 @@ class PriceActionScanner:
                     self._last_error = f"{underlying}: {exc}"
                 logger.exception("Price-action 5-minute analysis failed for %s", underlying)
         for signal in signals:
-            self._emit(signal)
+            emitted = self._emit(signal)
+            if emitted and signal.get("status") == "CONFIRMED":
+                with self._lock:
+                    self._triggered += 1
         with self._lock:
             self._checks += 1
             self._last_scan = datetime.now(IST).isoformat()
