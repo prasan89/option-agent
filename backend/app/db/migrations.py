@@ -16,7 +16,6 @@ def _connect():
 def run_migrations() -> None:
     """Run idempotent, non-destructive schema upgrades on application startup."""
     with _connect() as conn:
-        # Existing installations may have been created before these columns existed.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS signals (
                 id BIGSERIAL PRIMARY KEY,
@@ -109,7 +108,6 @@ def run_migrations() -> None:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_labels_ts ON dataset_labels(timestamp_ms)")
 
-        # Full signal/trade lifecycle journal. Existing data is preserved.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS signal_journal (
                 id BIGSERIAL PRIMARY KEY,
@@ -134,5 +132,45 @@ def run_migrations() -> None:
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_journal_generated ON signal_journal(generated_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_journal_status ON signal_journal(status)")
+
+        # A candidate that qualifies once must remain auditable for the whole
+        # trading day even if the live score later drops below the threshold.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS opportunity_history (
+                id BIGSERIAL PRIMARY KEY,
+                opportunity_key TEXT NOT NULL UNIQUE,
+                trading_day DATE NOT NULL,
+                first_seen_at TIMESTAMPTZ NOT NULL,
+                last_seen_at TIMESTAMPTZ NOT NULL,
+                last_qualified_at TIMESTAMPTZ NOT NULL,
+                underlying TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                option_type TEXT,
+                strike DOUBLE PRECISION,
+                expiry TEXT,
+                direction TEXT,
+                signal TEXT,
+                score DOUBLE PRECISION NOT NULL,
+                peak_score DOUBLE PRECISION NOT NULL,
+                premium DOUBLE PRECISION,
+                stop_premium DOUBLE PRECISION,
+                target_premium DOUBLE PRECISION,
+                breakeven DOUBLE PRECISION,
+                dte INTEGER,
+                delta DOUBLE PRECISION,
+                gamma DOUBLE PRECISION,
+                theta DOUBLE PRECISION,
+                vega DOUBLE PRECISION,
+                iv DOUBLE PRECISION,
+                volume DOUBLE PRECISION,
+                open_interest DOUBLE PRECISION,
+                status TEXT NOT NULL DEFAULT 'LIVE',
+                reason TEXT,
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_opp_history_day ON opportunity_history(trading_day, last_seen_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_opp_history_underlying ON opportunity_history(underlying, trading_day)")
+
         conn.commit()
         logger.info("Database schema migrations completed successfully")
