@@ -85,138 +85,93 @@ class PriceActionScanner:
             if not isinstance(c, (list, tuple)) or len(c) < 6:
                 continue
             try:
-                out.append({"ts": str(c[0]), "open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])})
+                out.append({
+                    "ts": str(c[0]), "open": float(c[1]), "high": float(c[2]),
+                    "low": float(c[3]), "close": float(c[4]), "volume": float(c[5]),
+                })
             except (TypeError, ValueError):
                 continue
         return out
 
     @staticmethod
-    def _pivots(rows: list[dict[str, float | str]], window: int = 3) -> list[tuple[int, float, str]]:
-        pivots: list[tuple[int, float, str]] = []
-        for i in range(window, len(rows) - window):
-            high = float(rows[i]["high"])
-            low = float(rows[i]["low"])
-            highs = [float(x["high"]) for x in rows[i - window:i + window + 1]]
-            lows = [float(x["low"]) for x in rows[i - window:i + window + 1]]
-            if high >= max(highs):
-                pivots.append((i, high, "H"))
-            if low <= min(lows):
-                pivots.append((i, low, "L"))
-        pivots.sort(key=lambda x: x[0])
-        clean: list[tuple[int, float, str]] = []
-        for p in pivots:
-            if clean and clean[-1][2] == p[2]:
-                if (p[2] == "H" and p[1] > clean[-1][1]) or (p[2] == "L" and p[1] < clean[-1][1]):
-                    clean[-1] = p
-            else:
-                clean.append(p)
-        return clean
+    def _ema(values: list[float], period: int) -> float:
+        if not values:
+            return 0.0
+        alpha = 2.0 / (period + 1.0)
+        value = values[0]
+        for item in values[1:]:
+            value = item * alpha + value * (1.0 - alpha)
+        return value
 
     @classmethod
-    def _detect_patterns(cls, rows: list[dict[str, float | str]]) -> list[dict[str, Any]]:
-        p = cls._pivots(rows)
-        if len(p) < 2:
-            return []
-        close = float(rows[-1]["close"])
-        avg_vol = sum(float(x["volume"]) for x in rows[-20:]) / max(1, min(20, len(rows)))
-        vol_ratio = float(rows[-1]["volume"]) / avg_vol if avg_vol else 0.0
-        patterns: list[dict[str, Any]] = []
-
-        # A daily breakout/breakdown is immediately confirmed as a setup.
-        a = p[-2]
-        if a[2] == "H" and close > a[1]:
-            patterns.append({"name": "BREAKOUT", "direction": "BUY", "score": min(90, 65 + (10 if vol_ratio >= 1.5 else 0) + (5 if abs(close - a[1]) / max(a[1], 1e-9) <= .02 else 0)), "status": "CONFIRMED", "points": {"level": a[1]}})
-        if a[2] == "L" and close < a[1]:
-            patterns.append({"name": "BREAKDOWN", "direction": "SELL", "score": min(90, 65 + (10 if vol_ratio >= 1.5 else 0) + (5 if abs(close - a[1]) / max(a[1], 1e-9) <= .02 else 0)), "status": "CONFIRMED", "points": {"level": a[1]}})
-
-        if len(p) >= 5:
-            a, b, c, d, e = p[-5:]
-            kinds = [x[2] for x in (a, b, c, d, e)]
-            if kinds == ["H", "L", "H", "L", "H"] and c[1] > a[1] and c[1] > e[1] and abs(a[1] - e[1]) / max(abs(c[1]), 1e-9) <= .06:
-                neckline = (b[1] + d[1]) / 2
-                patterns.append({"name": "HEAD AND SHOULDERS", "direction": "SELL", "score": 75, "status": "SETUP", "points": {"level": neckline}})
-            if kinds == ["L", "H", "L", "H", "L"] and c[1] < a[1] and c[1] < e[1] and abs(a[1] - e[1]) / max(abs(c[1]), 1e-9) <= .06:
-                neckline = (b[1] + d[1]) / 2
-                patterns.append({"name": "INVERSE HEAD AND SHOULDERS", "direction": "BUY", "score": 75, "status": "SETUP", "points": {"level": neckline}})
-
-        if len(p) >= 6:
-            q = p[-6:]
-            highs = [x[1] for x in q if x[2] == "H"]
-            lows = [x[1] for x in q if x[2] == "L"]
-            if len(highs) >= 3 and len(lows) >= 3:
-                dh, dl = highs[-1] - highs[0], lows[-1] - lows[0]
-                if dh < 0 and dl > 0:
-                    patterns.append({"name": "SYMMETRICAL TRIANGLE", "direction": "BUY", "score": 71, "status": "SETUP", "points": {"level": highs[-1], "highs": highs, "lows": lows})
-                elif dh < 0 and abs(dl) < abs(dh) * .35:
-                    patterns.append({"name": "DESCENDING TRIANGLE", "direction": "SELL", "score": 71, "status": "SETUP", "points": {"level": lows[-1], "highs": highs, "lows": lows})
-                elif dl > 0 and abs(dh) < abs(dl) * .35:
-                    patterns.append({"name": "ASCENDING TRIANGLE", "direction": "BUY", "score": 71, "status": "SETUP", "points": {"level": highs[-1], "highs": highs, "lows": lows})
-                elif dh < 0 and dl < 0:
-                    patterns.append({"name": "RISING WEDGE", "direction": "SELL", "score": 73, "status": "SETUP", "points": {"level": lows[-1], "highs": highs, "lows": lows})
-                elif dh > 0 and dl > 0:
-                    patterns.append({"name": "FALLING WEDGE", "direction": "BUY", "score": 73, "status": "SETUP", "points": {"level": highs[-1], "highs": highs, "lows": lows})
-
-        # If no named setup exists, retain the latest directional pivot as a
-        # conservative price-action trigger. This prevents an empty scanner
-        # simply because a textbook pattern was not detected.
-        if not patterns:
-            recent_high = max(float(x["high"]) for x in rows[-20:])
-            recent_low = min(float(x["low"]) for x in rows[-20:])
-            if close >= float(rows[-20]["close"]):
-                patterns.append({"name": "MOMENTUM BREAKOUT SETUP", "direction": "BUY", "score": 65, "status": "SETUP", "points": {"level": recent_high}})
-            else:
-                patterns.append({"name": "MOMENTUM BREAKDOWN SETUP", "direction": "SELL", "score": 65, "status": "SETUP", "points": {"level": recent_low}})
-        return sorted(patterns, key=lambda x: float(x["score"]), reverse=True)
-
-    @staticmethod
-    def _enrich(rows: list[dict[str, float | str]], pattern_score: float) -> dict[str, Any]:
+    def _daily_setup(cls, underlying: str, rows: list[dict[str, float | str]]) -> dict[str, Any] | None:
+        if len(rows) < cls.MIN_DAILY_BARS:
+            return None
         closes = [float(x["close"]) for x in rows]
+        highs = [float(x["high"]) for x in rows]
+        lows = [float(x["low"]) for x in rows]
+        volumes = [float(x["volume"]) for x in rows]
         close = closes[-1]
-        ema20 = ema50 = closes[0]
-        a20, a50 = 2 / 21, 2 / 51
-        for value in closes:
-            ema20 = value * a20 + ema20 * (1 - a20)
-            ema50 = value * a50 + ema50 * (1 - a50)
-        avg20 = sum(float(x["volume"]) for x in rows[-20:]) / max(1, min(20, len(rows)))
-        volume_ratio = float(rows[-1]["volume"]) / avg20 if avg20 else 0.0
-        trend = 20.0 if ((close > ema20 > ema50) or (close < ema20 < ema50)) else 8.0
-        volume = min(15.0, max(0.0, volume_ratio * 10.0))
-        recent = rows[-50:]
-        high = max(float(x["high"]) for x in recent)
-        low = min(float(x["low"]) for x in recent)
-        span = high - low
-        fib_level = None
-        fib_score = 6.0
-        if span > 0:
-            ratio = (close - low) / span
-            fib_level = min((.382, .5, .618, .786), key=lambda x: abs(x - ratio))
-            distance = abs(ratio - fib_level)
-            fib_score = 10.0 if distance <= .025 else 8.0 if distance <= .05 else 6.0
-        return {"score": round(min(100.0, pattern_score * .55 + trend + volume + fib_score), 2), "close": close, "ema20": round(ema20, 2), "ema50": round(ema50, 2), "volume_ratio": round(volume_ratio, 2), "fib_level": fib_level}
+        ema20 = cls._ema(closes, 20)
+        ema50 = cls._ema(closes, 50)
+        avg20 = sum(volumes[-20:]) / 20.0
+        vol_ratio = volumes[-1] / avg20 if avg20 else 0.0
+        resistance = max(highs[-21:-1])
+        support = min(lows[-21:-1])
 
-    @staticmethod
-    def _candidate(underlying: str, rows: list[dict[str, float | str]]) -> dict[str, Any] | None:
-        patterns = cls_patterns = PriceActionScanner._detect_patterns(rows)
-        enriched = []
-        for pattern in patterns:
-            enriched.append({**pattern, **PriceActionScanner._enrich(rows, float(pattern["score"]))})
-        candidates = [x for x in enriched if float(x["score"]) >= PriceActionScanner.MIN_SCORE]
-        if not candidates:
-            return None
-        # Prefer a single direction. If both directions exist, choose the
-        # strongest setup instead of discarding the whole underlying.
-        best = max(candidates, key=lambda x: float(x["score"]))
-        level = float(best["points"].get("level") or 0)
-        if level <= 0:
-            return None
-        buy_above = level if best["direction"] == "BUY" else None
-        sell_below = level if best["direction"] == "SELL" else None
+        # Prefer a genuine daily breakout/breakdown. Otherwise retain a
+        # directional momentum setup so the scanner never silently becomes
+        # empty merely because a textbook chart pattern is absent.
+        if close > resistance:
+            direction = "BUY"
+            pattern = "DAILY BREAKOUT"
+            level = resistance
+            pattern_score = 78.0
+        elif close < support:
+            direction = "SELL"
+            pattern = "DAILY BREAKDOWN"
+            level = support
+            pattern_score = 78.0
+        elif close > ema20 > ema50:
+            direction = "BUY"
+            pattern = "BULLISH MOMENTUM SETUP"
+            level = resistance
+            pattern_score = 68.0
+        elif close < ema20 < ema50:
+            direction = "SELL"
+            pattern = "BEARISH MOMENTUM SETUP"
+            level = support
+            pattern_score = 68.0
+        else:
+            # Neutral market: use the stronger side of the recent range as a
+            # watch setup, but do not pretend that it is already triggered.
+            up_move = (close - closes[-10]) / max(abs(closes[-10]), 1e-9)
+            down_move = (closes[-10] - close) / max(abs(closes[-10]), 1e-9)
+            if up_move >= down_move:
+                direction, pattern, level = "BUY", "RANGE BREAKOUT WATCH", resistance
+            else:
+                direction, pattern, level = "SELL", "RANGE BREAKDOWN WATCH", support
+            pattern_score = 65.0
+
+        trend_score = 20.0 if ((close > ema20 > ema50) or (close < ema20 < ema50)) else 8.0
+        volume_score = min(15.0, max(0.0, vol_ratio * 10.0))
+        score = min(100.0, pattern_score * 0.55 + trend_score + volume_score + 6.0)
         return {
-            "underlying": underlying, "signal": best["direction"], "pattern": best["name"],
-            "score": best["score"], "status": best["status"], "buy_above": buy_above, "sell_below": sell_below,
-            "trigger_level": level, "trigger_state": "WAITING_5M_CONFIRMATION", "daily_close": best["close"],
-            "ema20": best["ema20"], "ema50": best["ema50"], "volume_ratio": best["volume_ratio"],
-            "fib_level": best["fib_level"], "reason": f"{best['name']} setup; waiting for 5-minute trigger and volume confirmation.",
+            "underlying": underlying,
+            "signal": direction,
+            "pattern": pattern,
+            "score": round(score, 2),
+            "status": "SETUP",
+            "trigger_level": round(float(level), 4),
+            "buy_above": round(float(level), 4) if direction == "BUY" else None,
+            "sell_below": round(float(level), 4) if direction == "SELL" else None,
+            "trigger_state": "WAITING_5M_CONFIRMATION",
+            "daily_close": close,
+            "ema20": round(ema20, 2),
+            "ema50": round(ema50, 2),
+            "volume_ratio": round(vol_ratio, 2),
+            "fib_level": None,
+            "reason": f"{pattern}; waiting for 5-minute trigger and volume confirmation.",
         }
 
     def _universe(self) -> list[str]:
@@ -238,13 +193,13 @@ class PriceActionScanner:
         cache: dict[str, dict[str, Any]] = {}
         for underlying in self._universe():
             try:
-                payload = groww_client.historical_candles(f"NSE-{underlying}", f"{start} 09:15:00", f"{end} 15:40:00", "CASH", "1day")
+                payload = groww_client.historical_candles(
+                    f"NSE-{underlying}", f"{start} 09:15:00", f"{end} 15:40:00", "CASH", "1day"
+                )
                 rows = self._parse_candles(payload)
                 with self._lock:
                     self._daily_requests += 1
-                if len(rows) < self.MIN_DAILY_BARS:
-                    continue
-                candidate = self._candidate(underlying, rows)
+                candidate = self._daily_setup(underlying, rows)
                 if candidate:
                     cache[underlying] = {"daily_rows": rows, "candidate": candidate}
             except Exception as exc:
@@ -257,6 +212,7 @@ class PriceActionScanner:
             self._cache = cache
             self._cache_date = today.isoformat()
             self._setups = len(cache)
+        logger.info("Price-action daily cache built: underlyings=%s requests=%s errors=%s", len(cache), self._daily_requests, self._errors)
 
     def _emit(self, signal: dict[str, Any]) -> None:
         now = datetime.now(IST)
@@ -265,13 +221,30 @@ class PriceActionScanner:
             if key in self._alerted:
                 return
             self._alerted.add(key)
-        item = {**signal, "symbol": signal["underlying"], "price": signal["price"], "created_at": now.isoformat(), "data_sources": ["GROWW_HISTORICAL_DAILY", "GROWW_HISTORICAL_5MIN"], "research_only": True, "trading": "DISABLED"}
+        item = {
+            **signal,
+            "symbol": signal["underlying"],
+            "price": signal["price"],
+            "created_at": now.isoformat(),
+            "data_sources": ["GROWW_HISTORICAL_DAILY", "GROWW_HISTORICAL_5MIN"],
+            "research_only": True,
+            "trading": "DISABLED",
+        }
         try:
             signal_store.insert_many([{
-                "signal_key": f"PRICE_ACTION:{key[0]}:{key[1]}:{key[2]}:{key[3]}", "created_at": now,
-                "symbol": item["symbol"], "underlying": item["underlying"], "instrument_type": "PRICE_ACTION", "ltp": item["price"],
-                "direction": item["signal"], "bias": "BULLISH" if item["signal"] == "BUY" else "BEARISH", "score": item["score"],
-                "confidence": "HIGH" if item["score"] >= 80 else "MEDIUM", "event": "PRICE_ACTION", "evidence": [item["pattern"], item["reason"]], "payload": item,
+                "signal_key": f"PRICE_ACTION:{key[0]}:{key[1]}:{key[2]}:{key[3]}",
+                "created_at": now,
+                "symbol": item["symbol"],
+                "underlying": item["underlying"],
+                "instrument_type": "PRICE_ACTION",
+                "ltp": item["price"],
+                "direction": item["signal"],
+                "bias": "BULLISH" if item["signal"] == "BUY" else "BEARISH",
+                "score": item["score"],
+                "confidence": "HIGH" if item["score"] >= 80 else "MEDIUM",
+                "event": "PRICE_ACTION",
+                "evidence": [item["pattern"], item["reason"]],
+                "payload": item,
             }])
         except Exception as exc:
             logger.warning("Price-action signal persistence failed: %s", exc)
@@ -279,7 +252,6 @@ class PriceActionScanner:
             self._signals.insert(0, item)
             self._signals = self._signals[:50]
             self._last_signal = now.isoformat()
-            self._triggered += 1
 
     def _scan_once(self) -> None:
         today = datetime.now(IST).date().isoformat()
@@ -291,25 +263,48 @@ class PriceActionScanner:
             try:
                 end = datetime.now(IST)
                 start = end - timedelta(days=2)
-                payload = groww_client.historical_candles(f"NSE-{underlying}", start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), "CASH", "5minute")
+                payload = groww_client.historical_candles(
+                    f"NSE-{underlying}", start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), "CASH", "5minute"
+                )
                 rows5 = self._parse_candles(payload)
                 with self._lock:
                     self._intraday_requests += 1
-                if len(rows5) < 10:
+                if len(rows5) < 2:
                     continue
                 close = float(rows5[-1]["close"])
-                avg = sum(float(x["volume"]) for x in rows5[-20:]) / min(20, len(rows5))
+                volumes = [float(x["volume"]) for x in rows5[-21:-1]] or [float(rows5[-1]["volume"])]
+                avg = sum(volumes) / len(volumes)
                 vol_ratio = float(rows5[-1]["volume"]) / avg if avg else 0.0
                 level = float(candidate["trigger_level"])
-                crossed = (candidate["signal"] == "BUY" and close > level) or (candidate["signal"] == "SELL" and close < level)
-                if not crossed or vol_ratio < 1.0:
-                    continue
-                signals.append({**candidate, "price": close, "close_5min": close, "vol_ratio_5min": round(vol_ratio, 2), "trigger_state": "TRIGGERED TODAY", "reason": f"{candidate['reason']} 5-minute close crossed trigger with volume ratio {vol_ratio:.2f}x.", "time": str(rows5[-1]["ts"])})
+                crossed = (candidate["signal"] == "BUY" and close >= level) or (candidate["signal"] == "SELL" and close <= level)
+
+                signal = {
+                    **candidate,
+                    "price": close,
+                    "close_5min": close,
+                    "vol_ratio_5min": round(vol_ratio, 2),
+                    "time": str(rows5[-1]["ts"]),
+                }
+                if crossed and vol_ratio >= 1.0:
+                    signal["status"] = "CONFIRMED"
+                    signal["trigger_state"] = "TRIGGERED TODAY"
+                    signal["reason"] = f"{candidate['pattern']}; 5-minute close crossed trigger with volume ratio {vol_ratio:.2f}x."
+                    with self._lock:
+                        self._triggered += 1
+                    signals.append(signal)
+                elif candidate["pattern"] in {"DAILY BREAKOUT", "DAILY BREAKDOWN"}:
+                    # Preserve valid daily setups in the API while waiting for
+                    # the intraday confirmation instead of returning nothing.
+                    signal["status"] = "SETUP"
+                    signal["trigger_state"] = "WAITING_5M_CONFIRMATION"
+                    signal["reason"] = f"{candidate['pattern']}; current 5-minute price has not confirmed the trigger yet."
+                    signals.append(signal)
             except Exception as exc:
                 with self._lock:
                     self._intraday_requests += 1
                     self._errors += 1
                     self._last_error = f"{underlying}: {exc}"
+                logger.exception("Price-action 5-minute analysis failed for %s", underlying)
         for signal in signals:
             self._emit(signal)
         with self._lock:
