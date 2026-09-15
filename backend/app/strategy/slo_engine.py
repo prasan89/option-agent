@@ -24,12 +24,25 @@ def candidate_score(row: dict[str, Any], direction_score: float) -> dict[str, fl
     premium = float(row.get("mid") or row.get("ltp") or 0)
     bid = float(row.get("best_bid") or 0)
     ask = float(row.get("best_ask") or 0)
-    spread_pct = ((ask - bid) / premium) if premium > 0 and ask >= bid else 1.0
-    theta = abs(float(row.get("theta") or 0))
-    theta_ratio = theta / max(premium, 0.01)
+    has_book = premium > 0 and bid > 0 and ask >= bid
+    spread_pct = ((ask - bid) / premium) if has_book else None
+    theta_raw = row.get("theta")
+    try:
+        theta = abs(float(theta_raw)) if theta_raw is not None else None
+    except (TypeError, ValueError):
+        theta = None
+    if spread_pct is None:
+        # Missing depth is a data-quality limitation, not proof of poor liquidity.
+        # Keep the candidate visible and let the risk layer reject it if needed.
+        liquidity_score = 50.0
+    else:
+        liquidity_score = _clamp(100.0 * (1.0 - spread_pct / 0.10))
+    if theta is None:
+        theta_score = 50.0
+    else:
+        theta_ratio = theta / max(premium, 0.01)
+        theta_score = _clamp(100.0 * (1.0 - theta_ratio / 0.10))
     volatility_score = 50.0
-    liquidity_score = _clamp(100.0 * (1.0 - spread_pct / 0.10))
-    theta_score = _clamp(100.0 * (1.0 - theta_ratio / 0.10))
     direction = _clamp(abs(float(direction_score)))
     total = 0.45 * direction + 0.20 * liquidity_score + 0.20 * theta_score + 0.15 * volatility_score
     return {
@@ -38,28 +51,89 @@ def candidate_score(row: dict[str, Any], direction_score: float) -> dict[str, fl
         "theta_score": round(theta_score, 2),
         "volatility_score": round(volatility_score, 2),
         "total_score": round(total, 2),
-        "spread_pct": round(spread_pct * 100.0, 3),
+        "spread_pct": round(spread_pct * 100.0, 3) if spread_pct is not None else None,
     }
 
 
-def _current_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]], min_score: float) -> list[dict[str, Any]]:
-    direction_by_underlying: dict[str, tuple[str, float]] = {}
+def _direction_map(underlyings: list[dict[str, Any]]) -> dict[str, tuple[str, float]]:
+    result: dict[str, tuple[str, float]] = {}
     for item in underlyings:
         name = str(item.get("underlying") or "")
         raw = float(item.get("activity_score") or 0)
-        direction = str(item.get("direction") or "FLAT")
+        direction = str(item.get("direction") or "FLAT").upper()
         signed = raw if direction == "UP" else -raw if direction == "DOWN" else 0.0
-        direction_by_underlying[name] = (
-            "BULLISH" if signed > 0 else "BEARISH" if signed < 0 else "NEUTRAL",
-            signed,
-        )
+        result[name] = ("BULLISH" if signed > 0 else "BEARISH" if signed < 0 else "NEUTRAL", signed)
+    return result
 
-    results: list[dict[str, Any]] = []
+
+def _group_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         underlying = str(row.get("underlying") or "")
         if underlying:
             grouped.setdefault(underlying, []).append(row)
+    return grouped
+
+
+def _premium(row: dict[str, Any]) -> float:
+    bid = float(row.get("best_bid") or 0)
+    ask = float(row.get("best_ask") or 0)
+    if bid > 0 and ask >= bid:
+        return (bid + ask) / 2.0
+    return float(row.get("ltp") or 0)
+
+
+def _dte(row: dict[str, Any]) -> int:
+    expiry_text = str(row.get("expiry_date") or "")[:10]
+    try:
+        return (date.fromisoformat(expiry_text) - date.today()).days
+    except ValueError:
+        return 0
+
+
+def _make_result(row: dict[str, Any], underlying: str, bias: str, signed_direction: float, scores: dict[str, Any], status: str, reason: str) -> dict[str, Any]:
+    option_type = str(row.get("instrument_type") or "").upper()
+    premium = _premium(row)
+    strike = float(row.get("strike_price") or 0)
+    breakeven = strike + premium if option_type == "CE" else strike - premium
+    return {
+        "underlying": underlying,
+        "spot": row.get("underlying_spot"),
+        "direction": bias,
+        "direction_score": round(signed_direction, 2),
+        "signal": "BUY_CALL" if option_type == "CE" else "BUY_PUT",
+        "symbol": row.get("symbol"),
+        "option_type": option_type,
+        "strike": strike,
+        "expiry": str(row.get("expiry_date") or "")[:10],
+        "dte": _dte(row),
+        "premium": round(premium, 4),
+        "stop_premium": round(premium * 0.65, 4),
+        "target_premium": round(premium * 1.80, 4),
+        "breakeven": round(breakeven, 4),
+        "delta": row.get("delta"),
+        "gamma": row.get("gamma"),
+        "theta": row.get("theta"),
+        "vega": row.get("vega"),
+        "iv": _iv_decimal(row.get("iv")),
+        "volume": row.get("volume"),
+        "open_interest": row.get("open_interest"),
+        "data_sources": row.get("data_sources") or [],
+        **scores,
+        "status": status,
+        "first_seen_at": None,
+        "last_seen_at": None,
+        "peak_score": scores["total_score"],
+        "reason": reason,
+        "research_only": True,
+    }
+
+
+def _current_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]], min_score: float) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    direction_by_underlying = _direction_map(underlyings)
+    grouped = _group_rows(rows)
+    diagnostics = {"rows": len(rows), "option_rows": 0, "premium_rows": 0, "dte_rows": 0, "liquid_rows": 0, "direction_rows": 0, "score_rows": 0}
+    results: list[dict[str, Any]] = []
 
     for underlying, candidates in grouped.items():
         bias, signed_direction = direction_by_underlying.get(underlying, ("NEUTRAL", 0.0))
@@ -67,66 +141,78 @@ def _current_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any
             option_type = str(row.get("instrument_type") or "").upper()
             if option_type not in {"CE", "PE"}:
                 continue
-            premium = (float(row.get("best_bid") or 0) + float(row.get("best_ask") or 0)) / 2.0
-            if premium <= 0:
-                premium = float(row.get("ltp") or 0)
+            diagnostics["option_rows"] += 1
+            premium = _premium(row)
             if premium <= 0:
                 continue
-            expiry_text = str(row.get("expiry_date") or "")[:10]
-            try:
-                dte = (date.fromisoformat(expiry_text) - date.today()).days
-            except ValueError:
-                dte = 0
+            diagnostics["premium_rows"] += 1
+            dte = _dte(row)
             if dte < 7 or dte > 30:
                 continue
-            if int(row.get("volume") or 0) < 1000 or int(row.get("open_interest") or 0) < 5000:
+            diagnostics["dte_rows"] += 1
+            volume = int(row.get("volume") or 0)
+            oi = int(row.get("open_interest") or 0)
+            if volume < 1000 or oi < 5000:
                 continue
-            if bias == "BULLISH" and option_type != "CE":
+            diagnostics["liquid_rows"] += 1
+            if (bias == "BULLISH" and option_type != "CE") or (bias == "BEARISH" and option_type != "PE"):
                 continue
-            if bias == "BEARISH" and option_type != "PE":
-                continue
+            diagnostics["direction_rows"] += 1
             enriched = dict(row)
             enriched["mid"] = premium
             scores = candidate_score(enriched, signed_direction)
             if scores["total_score"] < min_score:
                 continue
-            stop = premium * 0.65
-            target = premium * 1.80
-            strike = float(row.get("strike_price") or 0)
-            breakeven = strike + premium if option_type == "CE" else strike - premium
-            results.append({
-                "underlying": underlying,
-                "spot": row.get("underlying_spot"),
-                "direction": bias,
-                "direction_score": round(signed_direction, 2),
-                "signal": "BUY_CALL" if option_type == "CE" else "BUY_PUT",
-                "symbol": row.get("symbol"),
-                "option_type": option_type,
-                "strike": strike,
-                "expiry": expiry_text,
-                "dte": dte,
-                "premium": round(premium, 4),
-                "stop_premium": round(stop, 4),
-                "target_premium": round(target, 4),
-                "breakeven": round(breakeven, 4),
-                "delta": row.get("delta"),
-                "gamma": row.get("gamma"),
-                "theta": row.get("theta"),
-                "vega": row.get("vega"),
-                "iv": _iv_decimal(row.get("iv")),
-                "volume": row.get("volume"),
-                "open_interest": row.get("open_interest"),
-                "data_sources": row.get("data_sources") or [],
-                **scores,
-                "status": "LIVE",
-                "first_seen_at": None,
-                "last_seen_at": None,
-                "peak_score": scores["total_score"],
-                "reason": "Flow direction agrees with option type; candidate clears the research score and liquidity filters.",
-                "research_only": True,
-            })
-    results.sort(key=lambda x: x["total_score"], reverse=True)
-    return results
+            diagnostics["score_rows"] += 1
+            results.append(_make_result(
+                row, underlying, bias, signed_direction, scores, "LIVE",
+                "Flow direction agrees with option type; candidate clears the research score and liquidity filters.",
+            ))
+
+    results.sort(key=lambda x: (x["total_score"], x["direction_score"]), reverse=True)
+    return results, diagnostics
+
+
+def _fallback_watch(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]], min_score: float) -> list[dict[str, Any]]:
+    """Return the best actionable research watch when strict filters produce zero rows.
+
+    This deliberately does not pretend the candidate is fully qualified. It keeps the
+    dashboard useful while preserving the strict score/risk gates for actual selection.
+    """
+    direction_by_underlying = _direction_map(underlyings)
+    candidates: list[dict[str, Any]] = []
+    for underlying, rows_for_underlying in _group_rows(rows).items():
+        bias, signed_direction = direction_by_underlying.get(underlying, ("NEUTRAL", 0.0))
+        if bias == "NEUTRAL":
+            continue
+        for row in rows_for_underlying:
+            option_type = str(row.get("instrument_type") or "").upper()
+            if option_type not in {"CE", "PE"}:
+                continue
+            if (bias == "BULLISH" and option_type != "CE") or (bias == "BEARISH" and option_type != "PE"):
+                continue
+            premium = _premium(row)
+            dte = _dte(row)
+            if premium <= 0 or dte < 1 or dte > 45:
+                continue
+            enriched = dict(row)
+            enriched["mid"] = premium
+            scores = candidate_score(enriched, signed_direction)
+            # Keep WATCH below the strict research threshold if the computed score is lower.
+            watch_score = min(float(min_score) - 0.1, max(40.0, float(scores["total_score"])))
+            scores["total_score"] = round(watch_score, 2)
+            candidates.append(_make_result(
+                row, underlying, bias, signed_direction, scores, "WATCH",
+                "Fallback research watch: no strict SLO opportunity currently clears every filter. This is not a trade-ready signal.",
+            ))
+
+    candidates.sort(key=lambda x: (
+        x["direction_score"],
+        float(x.get("volume") or 0),
+        float(x.get("open_interest") or 0),
+        x["total_score"],
+    ), reverse=True)
+    return candidates[:1]
 
 
 def _history_rows(current: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -179,30 +265,31 @@ def _history_rows(current: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]], min_score: float = 65.0) -> dict[str, Any]:
-    current = _current_results(rows, underlyings, min_score)
+    current, diagnostics = _current_results(rows, underlyings, min_score)
+    fallback = _fallback_watch(rows, underlyings, min_score) if not current else []
     now = datetime.now(timezone.utc)
 
-    # Persist immediately when a candidate qualifies. This is deliberately
-    # research-only and does not place or queue any order.
+    # Persist strict candidates and fallback watches for auditability. Execution remains disabled.
+    persist_rows = current + fallback
     try:
-        signal_store.upsert_opportunities(current, now=now)
-        history = _history_rows(current)
+        signal_store.upsert_opportunities(persist_rows, now=now)
+        history = _history_rows(persist_rows)
     except Exception:
         history = []
 
-    # Keep live candidates at the top. Historical candidates remain visible
-    # for the rest of the trading day instead of vanishing on the next refresh.
-    results = current + history
-    results = results[:50]
+    results = (current + fallback + history)[:50]
     return {
         "timestamp": rows[0].get("timestamp_ms") if rows else None,
         "count": len(current),
         "history_count": len(history),
+        "watch_count": len(fallback),
         "results": results,
         "live_results": current[:50],
+        "watch_results": fallback,
         "history": history,
-        "method": "SLO_OPTIONS_V1_LIVE_ADAPTER",
+        "diagnostics": diagnostics,
+        "method": "SLO_OPTIONS_V2_LIVE_ADAPTER",
         "research_only": True,
         "trading": "DISABLED",
-        "note": "Live opportunities are recalculated from current market data. Once a candidate qualifies, it is persisted for today's research history and remains visible even if it later fails a live filter.",
+        "note": "Strict SLO opportunities are preserved. If none qualify, one clearly-labelled WATCH candidate is shown instead of silently displaying an empty engine.",
     }
