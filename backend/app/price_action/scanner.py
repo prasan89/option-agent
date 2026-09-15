@@ -15,7 +15,7 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class PriceActionScanner:
-    """Research-only price-action scanner using completed daily and live 5-minute candles."""
+    """Research-only price-action scanner using completed daily and 5-minute candles."""
 
     MIN_SCORE = 65.0
     HISTORY_DAYS = 180
@@ -71,9 +71,7 @@ class PriceActionScanner:
     @staticmethod
     def _market_open() -> bool:
         now = datetime.now(IST)
-        if now.weekday() >= 5:
-            return False
-        return PriceActionScanner.MARKET_OPEN <= (now.hour, now.minute) <= PriceActionScanner.MARKET_CLOSE
+        return now.weekday() < 5 and PriceActionScanner.MARKET_OPEN <= (now.hour, now.minute) <= PriceActionScanner.MARKET_CLOSE
 
     @staticmethod
     def _parse_candles(payload: Any) -> list[dict[str, float | str]]:
@@ -95,15 +93,19 @@ class PriceActionScanner:
 
     @staticmethod
     def _candle_date(ts: str) -> str | None:
-        text = str(ts or "")[:10]
+        value = str(ts or "").strip()
         try:
-            return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
-        except ValueError:
+            if value.isdigit():
+                epoch = float(value)
+                if epoch > 10_000_000_000:
+                    epoch /= 1000.0
+                return datetime.fromtimestamp(epoch, tz=IST).date().isoformat()
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(IST).date().isoformat()
+        except (TypeError, ValueError, OverflowError, OSError):
             return None
 
     @classmethod
     def _completed_daily_rows(cls, rows: list[dict[str, float | str]], today: str) -> list[dict[str, float | str]]:
-        """Exclude today's still-forming daily candle from structural analysis."""
         return [row for row in rows if cls._candle_date(str(row.get("ts") or "")) not in {None, today}]
 
     @staticmethod
@@ -131,7 +133,6 @@ class PriceActionScanner:
         vol_ratio = volumes[-1] / avg20 if avg20 else 0.0
         resistance = max(highs[-21:-1])
         support = min(lows[-21:-1])
-
         if close > resistance:
             direction, pattern, level, pattern_score = "BUY", "DAILY BREAKOUT", resistance, 78.0
         elif close < support:
@@ -143,29 +144,18 @@ class PriceActionScanner:
         else:
             up_move = (close - closes[-10]) / max(abs(closes[-10]), 1e-9)
             down_move = (closes[-10] - close) / max(abs(closes[-10]), 1e-9)
-            if up_move >= down_move:
-                direction, pattern, level = "BUY", "RANGE BREAKOUT WATCH", resistance
-            else:
-                direction, pattern, level = "SELL", "RANGE BREAKDOWN WATCH", support
+            direction, pattern, level = ("BUY", "RANGE BREAKOUT WATCH", resistance) if up_move >= down_move else ("SELL", "RANGE BREAKDOWN WATCH", support)
             pattern_score = 65.0
-
         trend_score = 20.0 if ((close > ema20 > ema50) or (close < ema20 < ema50)) else 8.0
         volume_score = min(15.0, max(0.0, vol_ratio * 10.0))
         score = min(100.0, pattern_score * 0.55 + trend_score + volume_score + 6.0)
         return {
-            "underlying": underlying,
-            "signal": direction,
-            "pattern": pattern,
-            "score": round(score, 2),
-            "status": "SETUP",
-            "trigger_level": round(float(level), 4),
+            "underlying": underlying, "signal": direction, "pattern": pattern,
+            "score": round(score, 2), "status": "SETUP", "trigger_level": round(float(level), 4),
             "buy_above": round(float(level), 4) if direction == "BUY" else None,
             "sell_below": round(float(level), 4) if direction == "SELL" else None,
-            "trigger_state": "WAITING_5M_CONFIRMATION",
-            "daily_close": close,
-            "ema20": round(ema20, 2),
-            "ema50": round(ema50, 2),
-            "volume_ratio": round(vol_ratio, 2),
+            "trigger_state": "WAITING_5M_CONFIRMATION", "daily_close": close,
+            "ema20": round(ema20, 2), "ema50": round(ema50, 2), "volume_ratio": round(vol_ratio, 2),
             "fib_level": None,
             "reason": f"{pattern}; based on completed daily candles; waiting for 5-minute trigger and volume confirmation.",
         }
@@ -184,9 +174,13 @@ class PriceActionScanner:
 
     def _build_cache(self) -> None:
         today = datetime.now(IST).date()
-        end = today + timedelta(days=1)
-        start = today - timedelta(days=self.HISTORY_DAYS)
+        # Groww documents a maximum 180-day request for 1-day candles. Keep the
+        # request strictly inside that window; the previous +1 day endpoint made
+        # the request 181 calendar days and returned HTTP 400 for every symbol.
+        start = today - timedelta(days=self.HISTORY_DAYS - 1)
+        end = today
         cache: dict[str, dict[str, Any]] = {}
+        request_errors = 0
         for underlying in self._universe():
             try:
                 payload = groww_client.historical_candles(
@@ -200,6 +194,7 @@ class PriceActionScanner:
                 if candidate:
                     cache[underlying] = {"daily_rows": rows, "candidate": candidate}
             except Exception as exc:
+                request_errors += 1
                 with self._lock:
                     self._daily_requests += 1
                     self._errors += 1
@@ -207,45 +202,26 @@ class PriceActionScanner:
                 logger.exception("Price-action daily analysis failed for %s", underlying)
         with self._lock:
             self._cache = cache
-            self._cache_date = today.isoformat()
+            self._cache_date = today.isoformat() if request_errors == 0 else None
             self._setups = len(cache)
-        logger.info("Price-action daily cache built: underlyings=%s requests=%s errors=%s", len(cache), self._daily_requests, self._errors)
+        logger.info("Price-action daily cache built: underlyings=%s requests=%s errors=%s", len(cache), self._daily_requests, request_errors)
 
     def _emit(self, signal: dict[str, Any]) -> bool:
         now = datetime.now(IST)
         status = str(signal.get("status") or "SETUP")
-        key = (
-            signal["underlying"], signal["signal"], round(float(signal["trigger_level"]), 4),
-            now.date().isoformat(), status,
-        )
+        key = (signal["underlying"], signal["signal"], round(float(signal["trigger_level"]), 4), now.date().isoformat(), status)
         with self._lock:
             if key in self._alerted:
                 return False
             self._alerted.add(key)
-        item = {
-            **signal,
-            "symbol": signal["underlying"],
-            "price": signal["price"],
-            "created_at": now.isoformat(),
-            "data_sources": ["GROWW_HISTORICAL_DAILY", "GROWW_HISTORICAL_5MIN"],
-            "research_only": True,
-            "trading": "DISABLED",
-        }
+        item = {**signal, "symbol": signal["underlying"], "price": signal["price"], "created_at": now.isoformat(), "data_sources": ["GROWW_HISTORICAL_DAILY", "GROWW_HISTORICAL_5MIN"], "research_only": True, "trading": "DISABLED"}
         try:
             signal_store.insert_many([{
-                "signal_key": f"PRICE_ACTION:{key[0]}:{key[1]}:{key[2]}:{key[3]}:{key[4]}",
-                "created_at": now,
-                "symbol": item["symbol"],
-                "underlying": item["underlying"],
-                "instrument_type": "PRICE_ACTION",
-                "ltp": item["price"],
-                "direction": item["signal"],
-                "bias": "BULLISH" if item["signal"] == "BUY" else "BEARISH",
-                "score": item["score"],
-                "confidence": "HIGH" if item["score"] >= 80 else "MEDIUM",
-                "event": "PRICE_ACTION",
-                "evidence": [item["pattern"], item["reason"]],
-                "payload": item,
+                "signal_key": f"PRICE_ACTION:{key[0]}:{key[1]}:{key[2]}:{key[3]}:{key[4]}", "created_at": now,
+                "symbol": item["symbol"], "underlying": item["underlying"], "instrument_type": "PRICE_ACTION",
+                "ltp": item["price"], "direction": item["signal"], "bias": "BULLISH" if item["signal"] == "BUY" else "BEARISH",
+                "score": item["score"], "confidence": "HIGH" if item["score"] >= 80 else "MEDIUM",
+                "event": "PRICE_ACTION", "evidence": [item["pattern"], item["reason"]], "payload": item,
             }])
         except Exception as exc:
             logger.warning("Price-action signal persistence failed: %s", exc)
@@ -265,9 +241,7 @@ class PriceActionScanner:
             try:
                 end = datetime.now(IST)
                 start = end - timedelta(days=2)
-                payload = groww_client.historical_candles(
-                    f"NSE-{underlying}", start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), "CASH", "5minute"
-                )
+                payload = groww_client.historical_candles(f"NSE-{underlying}", start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), "CASH", "5minute")
                 rows5 = self._parse_candles(payload)
                 with self._lock:
                     self._intraday_requests += 1
@@ -279,14 +253,7 @@ class PriceActionScanner:
                 vol_ratio = float(rows5[-1]["volume"]) / avg if avg else 0.0
                 level = float(candidate["trigger_level"])
                 crossed = (candidate["signal"] == "BUY" and close >= level) or (candidate["signal"] == "SELL" and close <= level)
-
-                signal = {
-                    **candidate,
-                    "price": close,
-                    "close_5min": close,
-                    "vol_ratio_5min": round(vol_ratio, 2),
-                    "time": str(rows5[-1]["ts"]),
-                }
+                signal = {**candidate, "price": close, "close_5min": close, "vol_ratio_5min": round(vol_ratio, 2), "time": str(rows5[-1]["ts"])}
                 if crossed and vol_ratio >= 1.0:
                     signal["status"] = "CONFIRMED"
                     signal["trigger_state"] = "TRIGGERED TODAY"
