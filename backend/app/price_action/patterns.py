@@ -6,9 +6,9 @@ from typing import Any
 class PriceActionPatternDetector:
     """Dependency-free structural pattern detector for 5-minute OHLCV candles.
 
-    Patterns are deliberately confirmed only on a candle close. The detector
-    returns candidates with a trigger level and quality score; indicator and
-    volume confirmation are applied by the scanner.
+    Patterns are confirmed on candle close. The detector returns candidates
+    with a trigger level and quality score; indicator and volume confirmation
+    are applied by the scanner.
     """
 
     @staticmethod
@@ -76,29 +76,23 @@ class PriceActionPatternDetector:
         pivots = lows if inverse else highs
         if len(pivots) < 3:
             return []
-        # Search recent alternating shoulder/head/shoulder pivots.
-        for a, b, c in zip(pivots[-6:-2], pivots[-5:-1], pivots[-4:]):
-            left, head, right = a, b, c
+        for left, head, right in zip(pivots[-6:-2], pivots[-5:-1], pivots[-4:]):
             if inverse:
                 head_is_extreme = head[1] < left[1] and head[1] < right[1]
-                shoulders = self_levels = left[1] + right[1]
-                shoulder_ok = abs(left[1] - right[1]) / max(abs(shoulders / 2), 1e-9) < 0.025
             else:
                 head_is_extreme = head[1] > left[1] and head[1] > right[1]
-                shoulders = left[1] + right[1]
-                shoulder_ok = abs(left[1] - right[1]) / max(abs(shoulders / 2), 1e-9) < 0.025
+            shoulder_avg = (left[1] + right[1]) / 2.0
+            shoulder_ok = abs(left[1] - right[1]) / max(abs(shoulder_avg), 1e-9) < 0.025
             if not head_is_extreme or not shoulder_ok or right[0] >= i - 1:
                 continue
             if inverse:
-                neckline = (min(cls._high(rows, j) for j in range(left[0], head[0] + 1)) + min(cls._high(rows, j) for j in range(head[0], right[0] + 1))) / 2.0
-                crossed = self._close(rows, i - 1) <= neckline and self._close(rows, i) > neckline
-                signal = "BUY"
-                name = "INVERSE HEAD & SHOULDERS"
+                neckline = (max(cls._high(rows, j) for j in range(left[0], head[0] + 1)) + max(cls._high(rows, j) for j in range(head[0], right[0] + 1))) / 2.0
+                crossed = cls._close(rows, i - 1) <= neckline and cls._close(rows, i) > neckline
+                signal, name = "BUY", "INVERSE HEAD & SHOULDERS"
             else:
-                neckline = (max(cls._low(rows, j) for j in range(left[0], head[0] + 1)) + max(cls._low(rows, j) for j in range(head[0], right[0] + 1))) / 2.0
-                crossed = self._close(rows, i - 1) >= neckline and self._close(rows, i) < neckline
-                signal = "SELL"
-                name = "HEAD & SHOULDERS"
+                neckline = (min(cls._low(rows, j) for j in range(left[0], head[0] + 1)) + min(cls._low(rows, j) for j in range(head[0], right[0] + 1))) / 2.0
+                crossed = cls._close(rows, i - 1) >= neckline and cls._close(rows, i) < neckline
+                signal, name = "SELL", "HEAD & SHOULDERS"
             if crossed:
                 return [{"pattern": name, "signal": signal, "trigger_level": neckline, "quality": 88.0, "detail": "Three-pivot shoulder/head/shoulder structure confirmed by neckline close."}]
         return []
@@ -112,22 +106,29 @@ class PriceActionPatternDetector:
         if len(highs) < 2 or len(lows) < 2:
             return []
         hs, ls = cls._norm_slope(highs[-4:]), cls._norm_slope(lows[-4:])
-        high_now = highs[-1][1]
-        low_now = lows[-1][1]
-        close = self._close(rows, i)
-        previous = self._close(rows, i - 1)
-        upper = max(high_now, self._high(rows, i - 1))
-        lower = min(low_now, self._low(rows, i - 1))
-        # Convergence is measured by opposing or both-signed slopes moving toward
-        # one another. The breakout itself is the confirmation candle.
-        converging = abs(hs - ls) > 0.04 and ((hs < -0.03 and ls > 0.03) or (hs < -0.02 and ls < -0.005) or (hs > 0.02 and ls > 0.005))
-        if not converging:
-            return []
-        if close > upper and previous <= upper:
-            name = "TRIANGLE BREAKOUT" if hs < 0.02 else "WEDGE BREAKOUT"
+        close, previous = cls._close(rows, i), cls._close(rows, i - 1)
+        upper = max(highs[-1][1], cls._high(rows, i - 1))
+        lower = min(lows[-1][1], cls._low(rows, i - 1))
+        # Triangle: falling/flat highs and rising/flat lows. Wedge: both
+        # boundaries slope in the same direction while converging.
+        triangle = hs < -0.02 and ls > 0.02
+        rising_wedge = hs > 0.02 and ls > 0.005 and hs < ls
+        falling_wedge = hs < -0.005 and ls < -0.02 and hs > ls
+        if close > upper and previous <= upper and (triangle or rising_wedge or falling_wedge):
+            if rising_wedge:
+                name = "RISING WEDGE BREAKOUT"
+            elif falling_wedge:
+                name = "FALLING WEDGE BREAKOUT"
+            else:
+                name = "TRIANGLE BREAKOUT"
             return [{"pattern": name, "signal": "BUY", "trigger_level": upper, "quality": 82.0, "detail": "Converging pivot highs/lows resolved upward on a 5-minute close."}]
-        if close < lower and previous >= lower:
-            name = "TRIANGLE BREAKDOWN" if ls > -0.02 else "WEDGE BREAKDOWN"
+        if close < lower and previous >= lower and (triangle or rising_wedge or falling_wedge):
+            if rising_wedge:
+                name = "RISING WEDGE BREAKDOWN"
+            elif falling_wedge:
+                name = "FALLING WEDGE BREAKDOWN"
+            else:
+                name = "TRIANGLE BREAKDOWN"
             return [{"pattern": name, "signal": "SELL", "trigger_level": lower, "quality": 82.0, "detail": "Converging pivot highs/lows resolved downward on a 5-minute close."}]
         return []
 
@@ -135,18 +136,13 @@ class PriceActionPatternDetector:
     def _flag(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
         if i < 28:
             return []
-        impulse_start = i - 22
-        pole_end = i - 10
-        pole_start_close = cls._close(rows, impulse_start)
-        pole_end_close = cls._close(rows, pole_end)
+        impulse_start, pole_end = i - 22, i - 10
+        pole_start_close, pole_end_close = cls._close(rows, impulse_start), cls._close(rows, pole_end)
         pole_move = (pole_end_close - pole_start_close) / max(abs(pole_start_close), 1e-9)
         if abs(pole_move) < 0.025:
             return []
-        cons_start, cons_end = pole_end, i
-        support, resistance = cls._range(rows, cons_start, cons_end)
+        support, resistance = cls._range(rows, pole_end, i)
         cons_move = (cls._close(rows, i - 1) - pole_end_close) / max(abs(pole_end_close), 1e-9)
-        # Flag should retrace modestly against the pole and remain substantially
-        # smaller than it.
         if abs(cons_move) > abs(pole_move) * 0.6 + 0.005:
             return []
         close, previous = cls._close(rows, i), cls._close(rows, i - 1)
@@ -160,19 +156,14 @@ class PriceActionPatternDetector:
     def _rounding(cls, rows: list[dict[str, Any]], i: int, inverse: bool = False) -> list[dict[str, Any]]:
         if i < 40:
             return []
-        start = i - 36
-        mid = i - 18
-        left = cls._close(rows, start)
-        center = cls._close(rows, mid)
-        right_prev = cls._close(rows, i - 1)
-        close = cls._close(rows, i)
+        start, mid = i - 36, i - 18
+        left, center, right_prev, close = (cls._close(rows, j) for j in (start, mid, i - 1, i))
         if not cls._near(left, right_prev, 0.035):
             return []
         amplitude = max(abs(left - center), abs(right_prev - center)) / max(abs(left), 1e-9)
         if amplitude < 0.02:
             return []
-        left_mid = cls._close(rows, mid - 8)
-        mid_right = cls._close(rows, mid + 8)
+        left_mid, mid_right = cls._close(rows, mid - 8), cls._close(rows, mid + 8)
         if inverse:
             shape = center < left_mid and center < mid_right
             trigger = max(cls._high(rows, j) for j in range(start, mid))
@@ -189,7 +180,6 @@ class PriceActionPatternDetector:
 
     @classmethod
     def detect(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
-        """Return confirmed patterns on candle i, strongest first."""
         candidates: list[dict[str, Any]] = []
         candidates.extend(cls._range_break(rows, i))
         candidates.extend(cls._head_shoulders(rows, i, inverse=False))
@@ -203,7 +193,6 @@ class PriceActionPatternDetector:
 
     @classmethod
     def setup_candidates(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
-        """Return near-trigger pattern setups for the latest candle."""
         if i < 40:
             return []
         candidates: list[dict[str, Any]] = []
