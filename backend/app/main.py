@@ -7,6 +7,7 @@ from app.api.agent import router as agent_router
 from app.api.dashboard import router as dashboard_router
 from app.api.dashboard_fixed import router as dashboard_fixed_router
 from app.api.dashboard_shell import router as dashboard_shell_router
+from app.api.dashboard_filters import dashboard_filter_middleware
 from app.api.dataset import router as dataset_router
 from app.api.flow import router as flow_router
 from app.api.fno_engine import router as fno_engine_router
@@ -33,6 +34,7 @@ from app.signals.monitor import signal_monitor
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Options Flow Agent API", version=settings.app_version, description="AI-assisted quantitative options-flow analysis platform.")
+app.middleware("http")(dashboard_filter_middleware)
 
 app.include_router(groww_router)
 app.include_router(flow_router)
