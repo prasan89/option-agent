@@ -16,6 +16,7 @@ from app.api.intelligence_score import router as intelligence_score_router
 from app.api.ml import router as ml_router
 from app.api.pipeline import router as pipeline_router
 from app.api.price_action import router as price_action_router
+from app.api.price_action_history import router as price_action_history_router
 from app.api.scanner import router as scanner_router
 from app.api.signals import router as signals_router
 from app.api.strategy import router as strategy_router
@@ -48,6 +49,7 @@ app.include_router(dashboard_v3_router)
 app.include_router(dashboard_router)
 app.include_router(strategy_dashboard_router)
 app.include_router(price_action_router)
+app.include_router(price_action_history_router)
 app.include_router(agent_router)
 
 
