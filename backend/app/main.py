@@ -19,6 +19,7 @@ from app.api.price_action import router as price_action_router
 from app.api.price_action_history import router as price_action_history_router
 from app.api.scanner import router as scanner_router
 from app.api.signals import router as signals_router
+from app.api.slo_history import router as slo_history_router
 from app.api.strategy import router as strategy_router
 from app.api.strategy_dashboard import router as strategy_dashboard_router
 from app.core.config import settings
@@ -50,6 +51,7 @@ app.include_router(dashboard_router)
 app.include_router(strategy_dashboard_router)
 app.include_router(price_action_router)
 app.include_router(price_action_history_router)
+app.include_router(slo_history_router)
 app.include_router(agent_router)
 
 
