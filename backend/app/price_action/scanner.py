@@ -18,7 +18,10 @@ class PriceActionScanner:
     """Research-only price-action scanner using Groww daily and 5-minute candles."""
 
     MIN_SCORE = 65.0
-    HISTORY_DAYS = 365
+    # Groww's current backtesting documentation limits 1-day candle requests
+    # to 180 days. EMA20/EMA50 and 20-day range analysis do not require a year
+    # of history, so stay within that documented request limit.
+    HISTORY_DAYS = 180
     MAX_UNDERLYINGS = 50
     MIN_DAILY_BARS = 80
     CYCLE_SECONDS = 300
@@ -119,9 +122,6 @@ class PriceActionScanner:
         resistance = max(highs[-21:-1])
         support = min(lows[-21:-1])
 
-        # Prefer a genuine daily breakout/breakdown. Otherwise retain a
-        # directional momentum setup so the scanner never silently becomes
-        # empty merely because a textbook chart pattern is absent.
         if close > resistance:
             direction = "BUY"
             pattern = "DAILY BREAKOUT"
@@ -143,8 +143,6 @@ class PriceActionScanner:
             level = support
             pattern_score = 68.0
         else:
-            # Neutral market: use the stronger side of the recent range as a
-            # watch setup, but do not pretend that it is already triggered.
             up_move = (close - closes[-10]) / max(abs(closes[-10]), 1e-9)
             down_move = (closes[-10] - close) / max(abs(closes[-10]), 1e-9)
             if up_move >= down_move:
@@ -293,8 +291,6 @@ class PriceActionScanner:
                         self._triggered += 1
                     signals.append(signal)
                 elif candidate["pattern"] in {"DAILY BREAKOUT", "DAILY BREAKDOWN"}:
-                    # Preserve valid daily setups in the API while waiting for
-                    # the intraday confirmation instead of returning nothing.
                     signal["status"] = "SETUP"
                     signal["trigger_state"] = "WAITING_5M_CONFIRMATION"
                     signal["reason"] = f"{candidate['pattern']}; current 5-minute price has not confirmed the trigger yet."
