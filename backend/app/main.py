@@ -14,6 +14,7 @@ from app.api.fno_engine import router as fno_engine_router
 from app.api.groww import router as groww_router
 from app.api.intelligence import router as intelligence_router
 from app.api.intelligence_score import router as intelligence_score_router
+from app.api.jft import router as jft_router
 from app.api.ml import router as ml_router
 from app.api.pipeline import router as pipeline_router
 from app.api.price_action import router as price_action_router
@@ -27,6 +28,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.migrations import run_migrations
 from app.intelligence.historical_session import historical_session_analyzer
+from app.jft.scanner import jft_scanner
 from app.pipeline import research_pipeline
 from app.price_action.scanner import price_action_scanner
 from app.signals.monitor import signal_monitor
@@ -54,6 +56,7 @@ app.include_router(strategy_dashboard_router)
 app.include_router(price_action_router)
 app.include_router(price_action_history_router)
 app.include_router(slo_history_router)
+app.include_router(jft_router)
 app.include_router(agent_router)
 
 
@@ -112,6 +115,8 @@ def system_status() -> dict[str, object]:
         "fno_scanner": "RUNNING" if fno_scanner.running else "STOPPED",
         "price_action_scanner": "RUNNING" if price_action_scanner.running else "STOPPED",
         "price_action": price_action_scanner.stats,
+        "jft_scanner": "RUNNING" if jft_scanner.running else "STOPPED",
+        "jft": jft_scanner.stats,
         "intelligence_score_engine": "RUNNING" if intelligence_score_engine.running else "STOPPED",
         "historical_dataset": "RUNNING" if historical_dataset_collector.running else "STOPPED",
         "ml_engine": "RUNNING" if ml_engine.running else "STOPPED",
