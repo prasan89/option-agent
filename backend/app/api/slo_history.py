@@ -45,3 +45,8 @@ function render(){const rows=[...all].sort((a,b)=>{const c=compare(a,b);return s
 async function refresh(){try{const r=await fetch('/dashboard/history-data');if(!r.ok)throw new Error(await r.text());const d=await r.json();all=d.rows||[];document.getElementById('clock').textContent=new Date().toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false})+' IST';document.getElementById('day').textContent=d.date+' • auto refresh 10s';document.getElementById('count').textContent=all.length;document.getElementById('live').textContent=all.filter(x=>x.status==='LIVE').length;document.getElementById('gone').textContent=all.filter(x=>x.status!=='LIVE').length;document.getElementById('last').textContent=all.length?ist(all[0].last_seen_at):'—';render()}catch(e){document.getElementById('rows').innerHTML='<tr><td colspan="19" class="empty">History unavailable: '+esc(e.message)+'</td></tr>'}}
 refresh();setInterval(refresh,10000);
 </script></div></body></html>'''
+
+
+@router.get("/dashboard/history", response_class=HTMLResponse, include_in_schema=False)
+def history_page() -> str:
+    return HTML
