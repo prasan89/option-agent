@@ -56,8 +56,12 @@ async def reversal_navigation(request: Request, call_next):
         return response
     if "/reversal" not in html and 'href="/jft"' in html:
         links = '<a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a>'
-        html = html.replace('<a href="/jft" class="active">JFT Signals</a>', f'<a href="/jft">JFT Signals</a>{links}', 1)
-        html = html.replace('<a href="/jft">JFT Signals</a>', f'<a href="/jft">JFT Signals</a>{links}', 1)
+        active = '<a href="/jft" class="active">JFT Signals</a>'
+        plain = '<a href="/jft">JFT Signals</a>'
+        if active in html:
+            html = html.replace(active, f'{plain}{links}', 1)
+        elif plain in html:
+            html = html.replace(plain, f'{plain}{links}', 1)
     headers = dict(response.headers)
     headers.pop("content-length", None)
     return Response(content=html, status_code=response.status_code, headers=headers, media_type="text/html")
