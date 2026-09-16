@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -18,15 +18,10 @@ IST = ZoneInfo("Asia/Kolkata")
 class JFTScanner:
     """Historical 5-minute JFT level-cross scanner.
 
-    Rule:
-      - Previous-session classic pivot R3 is the bullish trigger.
-      - A completed 5-minute close crossing from <= R3 to > R3 emits BUY CALL.
-      - Stop loss is previous-session R2.
-      - Previous-session classic pivot S3 is the bearish trigger.
-      - A completed 5-minute close crossing from >= S3 to < S3 emits BUY PUT.
-      - Stop loss is previous-session S2.
-
-    The scanner is research-only and never places broker orders.
+    Previous-session classic pivots are used for every trading session:
+    R3 cross -> BUY CALL with SL at R2; S3 cross -> BUY PUT with SL at S2.
+    A completed 5-minute close must cross the level. Only the first R3 and
+    first S3 cross are emitted per underlying/session.
     """
 
     HISTORY_DAYS = 30
@@ -60,7 +55,7 @@ class JFTScanner:
             return {
                 "running": self.running,
                 "mode": "HISTORICAL_5MIN_JFT",
-                "rule": "CLOSE CROSS R3 => BUY CALL / SL R2; CLOSE CROSS S3 => BUY PUT / SL S2",
+                "rule": "5M CLOSE CROSS R3 => BUY CALL / SL R2; 5M CLOSE CROSS S3 => BUY PUT / SL S2",
                 "cached_underlyings": len(self._levels),
                 "checks": self._checks,
                 "requests": self._requests,
@@ -111,15 +106,7 @@ class JFTScanner:
     @classmethod
     def pivot_levels(cls, high: float, low: float, close: float) -> dict[str, float]:
         p = (high + low + close) / 3.0
-        return {
-            "pivot": p,
-            "r1": 2 * p - low,
-            "r2": p + high - low,
-            "r3": high + 2 * (p - low),
-            "s1": 2 * p - high,
-            "s2": p - high + low,
-            "s3": low - 2 * (high - p),
-        }
+        return {"pivot": p, "r1": 2 * p - low, "r2": p + high - low, "r3": high + 2 * (p - low), "s1": 2 * p - high, "s2": p - high + low, "s3": low - 2 * (high - p)}
 
     @classmethod
     def _sessions(cls, rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -131,50 +118,56 @@ class JFTScanner:
         return dict(sorted(out.items()))
 
     @classmethod
+    def _signal(cls, underlying: str, row: dict[str, Any], levels: dict[str, float], signal: str, trigger: str, stop_reference: str) -> dict[str, Any]:
+        dt = cls._dt(str(row["ts"]))
+        if dt is None:
+            raise ValueError("Invalid candle timestamp")
+        trigger_level = levels[trigger.lower()]
+        stop_level = levels[stop_reference.lower()]
+        bullish = signal == "BUY CALL"
+        return {
+            "underlying": underlying, "symbol": underlying, "signal": signal,
+            "option_action": "BUY CE" if bullish else "BUY PE", "direction": "BULLISH" if bullish else "BEARISH",
+            "pattern": f"JFT {trigger} CROSS", "trigger": trigger, "trigger_level": round(trigger_level, 4),
+            "stop_level": round(stop_level, 4), "stop_reference": stop_reference, "pivot": round(levels["pivot"], 4),
+            "r1": round(levels["r1"], 4), "r2": round(levels["r2"], 4), "r3": round(levels["r3"], 4),
+            "s1": round(levels["s1"], 4), "s2": round(levels["s2"], 4), "s3": round(levels["s3"], 4),
+            "price": float(row["close"]), "close_5min": float(row["close"]), "time": str(row["ts"]), "created_at": dt.isoformat(),
+            "reason": f"5M close crossed {'above' if bullish else 'below'} previous-session {trigger} ({trigger_level:.2f}); {signal}. Stop loss = {stop_reference} ({stop_level:.2f}).",
+            "data_sources": ["GROWW_HISTORICAL_5MIN"], "research_only": True, "trading": "DISABLED",
+        }
+
+    @classmethod
     def _signals_for(cls, underlying: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sessions = cls._sessions(rows)
         days = list(sessions)
         results: list[dict[str, Any]] = []
         for pos in range(1, len(days)):
-            prev_day, current_day = days[pos - 1], days[pos]
-            previous = sessions[prev_day]
-            current = sessions[current_day]
+            previous = sessions[days[pos - 1]]
+            current = sessions[days[pos]]
             if not previous or len(current) < 2:
                 continue
-            levels = cls.pivot_levels(previous[0]["high"] if False else max(float(x["high"]) for x in previous), min(float(x["low"]) for x in previous), float(previous[-1]["close"]))
+            high = max(float(x["high"]) for x in previous)
+            low = min(float(x["low"]) for x in previous)
+            close = float(previous[-1]["close"])
+            levels = cls.pivot_levels(high, low, close)
             r3, r2, s3, s2 = levels["r3"], levels["r2"], levels["s3"], levels["s2"]
             previous_close = float(current[0]["open"])
+            r3_fired = False
+            s3_fired = False
             for row in current:
-                close = float(row["close"])
+                close_5m = float(row["close"])
                 dt = cls._dt(str(row["ts"]))
                 if not dt:
-                    previous_close = close
+                    previous_close = close_5m
                     continue
-                if previous_close <= r3 < close:
-                    results.append({
-                        "underlying": underlying, "symbol": underlying, "signal": "BUY CALL", "option_action": "BUY CE",
-                        "direction": "BULLISH", "pattern": "JFT R3 CROSS", "trigger": "R3", "trigger_level": round(r3, 4),
-                        "stop_level": round(r2, 4), "stop_reference": "R2", "pivot": round(levels["pivot"], 4),
-                        "r1": round(levels["r1"], 4), "r2": round(r2, 4), "r3": round(r3, 4),
-                        "s1": round(levels["s1"], 4), "s2": round(s2, 4), "s3": round(s3, 4),
-                        "price": close, "close_5min": close, "time": str(row["ts"]), "created_at": dt.isoformat(),
-                        "reason": f"5M close crossed above previous-session R3 ({r3:.2f}); JFT BUY CALL. Stop loss = R2 ({r2:.2f}).",
-                        "data_sources": ["GROWW_HISTORICAL_5MIN"], "research_only": True, "trading": "DISABLED",
-                    })
-                    previous_close = close
-                    continue
-                if previous_close >= s3 > close:
-                    results.append({
-                        "underlying": underlying, "symbol": underlying, "signal": "BUY PUT", "option_action": "BUY PE",
-                        "direction": "BEARISH", "pattern": "JFT S3 CROSS", "trigger": "S3", "trigger_level": round(s3, 4),
-                        "stop_level": round(s2, 4), "stop_reference": "S2", "pivot": round(levels["pivot"], 4),
-                        "r1": round(levels["r1"], 4), "r2": round(r2, 4), "r3": round(r3, 4),
-                        "s1": round(levels["s1"], 4), "s2": round(s2, 4), "s3": round(s3, 4),
-                        "price": close, "close_5min": close, "time": str(row["ts"]), "created_at": dt.isoformat(),
-                        "reason": f"5M close crossed below previous-session S3 ({s3:.2f}); JFT BUY PUT. Stop loss = S2 ({s2:.2f}).",
-                        "data_sources": ["GROWW_HISTORICAL_5MIN"], "research_only": True, "trading": "DISABLED",
-                    })
-                previous_close = close
+                if not r3_fired and previous_close <= r3 < close_5m:
+                    results.append(cls._signal(underlying, row, levels, "BUY CALL", "R3", "R2"))
+                    r3_fired = True
+                if not s3_fired and previous_close >= s3 > close_5m:
+                    results.append(cls._signal(underlying, row, levels, "BUY PUT", "S3", "S2"))
+                    s3_fired = True
+                previous_close = close_5m
         return results
 
     def _universe(self) -> list[str]:
@@ -194,8 +187,7 @@ class JFTScanner:
                     self._requests += 1
                 signals = self._signals_for(underlying, rows) if len(rows) >= self.MIN_BARS else []
                 if signals:
-                    latest = signals[-1]
-                    levels[underlying] = {"latest": latest, "count": len(signals), "signals": signals[-20:]}
+                    levels[underlying] = {"latest": signals[-1], "count": len(signals), "signals": signals[-20:]}
                     for signal in signals:
                         self._emit(signal)
             except Exception as exc:
