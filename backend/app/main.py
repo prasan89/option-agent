@@ -42,7 +42,7 @@ app.middleware("http")(dashboard_filter_middleware)
 
 @app.middleware("http")
 async def reversal_navigation(request: Request, call_next):
-    """Add the dedicated reversal tabs to existing dashboard navigation without replacing dashboard UI."""
+    """Add dedicated reversal tabs to the existing dashboard navigation."""
     response = await call_next(request)
     if request.url.path not in {"/dashboard", "/strategy", "/dashboard/history", "/price-action", "/price-action/history", "/jft"}:
         return response
@@ -55,15 +55,9 @@ async def reversal_navigation(request: Request, call_next):
     except UnicodeDecodeError:
         return response
     if "/reversal" not in html and 'href="/jft"' in html:
-        html = html.replace(
-            '<a href="/jft" class="active">JFT Signals</a>',
-            '<a href="/jft">JFT Signals</a><a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a>',
-        )
-        html = html.replace(
-            '<a href="/jft">JFT Signals</a>',
-            '<a href="/jft">JFT Signals</a><a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a>',
-            1,
-        )
+        links = '<a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a>'
+        html = html.replace('<a href="/jft" class="active">JFT Signals</a>', f'<a href="/jft">JFT Signals</a>{links}', 1)
+        html = html.replace('<a href="/jft">JFT Signals</a>', f'<a href="/jft">JFT Signals</a>{links}', 1)
     headers = dict(response.headers)
     headers.pop("content-length", None)
     return Response(content=html, status_code=response.status_code, headers=headers, media_type="text/html")
