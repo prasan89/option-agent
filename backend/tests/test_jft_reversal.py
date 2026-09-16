@@ -1,12 +1,20 @@
+from datetime import datetime, timedelta
+
 from app.jft.reversal import detect_reversals
 
 
 def candle(i, o, h, l, c):
-    return {"ts": f"2026-09-16T{9 + i // 12:02d}:{15 + (i % 12) * 5:02d}:00+05:30", "open": o, "high": h, "low": l, "close": c, "volume": 1000.0}
+    ts = datetime(2026, 9, 16, 9, 15) + timedelta(minutes=5 * i)
+    return {"ts": ts.isoformat() + "+05:30", "open": o, "high": h, "low": l, "close": c, "volume": 1000.0}
+
+
+def baseline_rows():
+    # Non-zero normal bodies so the "big" candles have a measurable baseline.
+    return [candle(i, 100.0, 101.0, 99.0, 100.5) for i in range(23)]
 
 
 def test_three_big_red_then_green_generates_buy_call():
-    rows = [candle(i, 100.0, 101.0, 99.0, 100.0) for i in range(23)]
+    rows = baseline_rows()
     rows += [
         candle(23, 100.0, 100.5, 96.0, 96.0),
         candle(24, 96.0, 96.5, 92.0, 92.0),
@@ -21,7 +29,7 @@ def test_three_big_red_then_green_generates_buy_call():
 
 
 def test_three_big_green_then_red_generates_buy_put():
-    rows = [candle(i, 100.0, 101.0, 99.0, 100.0) for i in range(23)]
+    rows = baseline_rows()
     rows += [
         candle(23, 100.0, 104.0, 99.5, 104.0),
         candle(24, 104.0, 108.0, 103.5, 108.0),
