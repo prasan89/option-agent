@@ -19,6 +19,7 @@ from app.api.ml import router as ml_router
 from app.api.pipeline import router as pipeline_router
 from app.api.price_action import router as price_action_router
 from app.api.price_action_history import router as price_action_history_router
+from app.api.reversal import router as reversal_router
 from app.api.scanner import router as scanner_router
 from app.api.signals import router as signals_router
 from app.api.slo_history import router as slo_history_router
@@ -57,6 +58,7 @@ app.include_router(price_action_router)
 app.include_router(price_action_history_router)
 app.include_router(slo_history_router)
 app.include_router(jft_router)
+app.include_router(reversal_router)
 app.include_router(agent_router)
 
 
@@ -98,34 +100,17 @@ def system_status() -> dict[str, object]:
     from app.flow.engine import flow_engine
     from app.intelligence.fno_scanner import fno_scanner
     from app.intelligence.score_engine import intelligence_score_engine
-    from app.dataset.collector import historical_dataset_collector
-    from app.ml.engine import ml_engine
-    from app.strategy.fno_engine import fno_opportunity_engine
-
-    feed_status = "RUNNING" if feed_service.running else "STARTING" if feed_service.starting else "STOPPED"
     return {
         "status": "UP",
-        "service": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
-        "market_data": "CONFIGURED" if groww_client.configured else "NOT_CONFIGURED",
-        "groww_feed": feed_status,
-        "flow_engine": "RUNNING" if flow_engine.running else "STOPPED",
-        "flow_intelligence": "READY",
-        "fno_scanner": "RUNNING" if fno_scanner.running else "STOPPED",
-        "price_action_scanner": "RUNNING" if price_action_scanner.running else "STOPPED",
-        "price_action": price_action_scanner.stats,
-        "jft_scanner": "RUNNING" if jft_scanner.running else "STOPPED",
-        "jft": jft_scanner.stats,
-        "intelligence_score_engine": "RUNNING" if intelligence_score_engine.running else "STOPPED",
-        "historical_dataset": "RUNNING" if historical_dataset_collector.running else "STOPPED",
-        "ml_engine": "RUNNING" if ml_engine.running else "STOPPED",
-        "model_ready": ml_engine.stats["model_ready"],
-        "signal_monitor": "RUNNING" if signal_monitor.running else "STOPPED",
-        "persisted_signals": signal_monitor.stats["persisted_signals"],
+        "market_data": {"configured": groww_client.configured},
+        "groww_feed": feed_service.stats,
+        "flow_engine": flow_engine.stats,
+        "fno_scanner": fno_scanner.stats,
         "historical_session": historical_session_analyzer.stats,
-        "pipeline": research_pipeline.stats,
-        "fno_opportunity_engine": fno_opportunity_engine.status(),
-        "ai_agent": "READY",
+        "price_action_scanner": price_action_scanner.stats,
+        "jft_scanner": jft_scanner.stats,
+        "intelligence_score": intelligence_score_engine.stats,
         "trading": "DISABLED",
     }
