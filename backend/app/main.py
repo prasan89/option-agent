@@ -1,7 +1,7 @@
 import logging
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.api.agent import router as agent_router
 from app.api.dashboard import router as dashboard_router
@@ -38,6 +38,36 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Options Flow Agent API", version=settings.app_version, description="AI-assisted quantitative options-flow analysis platform.")
 app.middleware("http")(dashboard_filter_middleware)
+
+
+@app.middleware("http")
+async def reversal_navigation(request: Request, call_next):
+    """Add the dedicated reversal tabs to existing dashboard navigation without replacing dashboard UI."""
+    response = await call_next(request)
+    if request.url.path not in {"/dashboard", "/strategy", "/dashboard/history", "/price-action", "/price-action/history", "/jft"}:
+        return response
+    content_type = str(response.headers.get("content-type", ""))
+    if "text/html" not in content_type or not hasattr(response, "body_iterator"):
+        return response
+    body = b"".join([chunk async for chunk in response.body_iterator])
+    try:
+        html = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return response
+    if "/reversal" not in html and 'href="/jft"' in html:
+        html = html.replace(
+            '<a href="/jft" class="active">JFT Signals</a>',
+            '<a href="/jft">JFT Signals</a><a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a>',
+        )
+        html = html.replace(
+            '<a href="/jft">JFT Signals</a>',
+            '<a href="/jft">JFT Signals</a><a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a>',
+            1,
+        )
+    headers = dict(response.headers)
+    headers.pop("content-length", None)
+    return Response(content=html, status_code=response.status_code, headers=headers, media_type="text/html")
+
 
 app.include_router(groww_router)
 app.include_router(flow_router)
