@@ -48,8 +48,6 @@ class SignalStore:
                 )
                 """
             )
-            # CREATE TABLE IF NOT EXISTS does not migrate an existing table.
-            # Keep older BTP trial databases compatible with the current writer.
             for column, definition in (
                 ("underlying", "TEXT"),
                 ("instrument_type", "TEXT"),
@@ -66,7 +64,6 @@ class SignalStore:
                 conn.execute(f"ALTER TABLE signals ADD COLUMN IF NOT EXISTS {column} {definition}")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_underlying ON signals(underlying)")
-
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS opportunity_history (
@@ -184,9 +181,6 @@ class SignalStore:
                     ),
                 )
                 written += cur.rowcount
-
-            # Anything from today that has not qualified in the current scan is
-            # retained as history instead of silently disappearing.
             conn.execute(
                 """
                 UPDATE opportunity_history
@@ -238,6 +232,32 @@ class SignalStore:
                 """, (limit,)
             ).fetchall()
             columns = [d.name for d in conn.execute("SELECT * FROM signals LIMIT 0").description]
+        result = []
+        for row in rows:
+            item = dict(zip(columns, row))
+            if isinstance(item.get("created_at"), datetime):
+                item["created_at"] = item["created_at"].isoformat()
+            result.append(item)
+        return result
+
+    def reversal_history(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Return every persisted JFT reversal event, newest first."""
+        limit = max(1, min(limit, 5000))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, signal_key, created_at, symbol, underlying, ltp,
+                       direction, bias, score, confidence, event, evidence, payload
+                FROM signals
+                WHERE instrument_type='JFT'
+                  AND (event='JFT_REVERSAL' OR payload->>'trigger'='REVERSAL')
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """, (limit,)
+            ).fetchall()
+            columns = [d.name for d in conn.execute(
+                "SELECT id, signal_key, created_at, symbol, underlying, ltp, direction, bias, score, confidence, event, evidence, payload FROM signals LIMIT 0"
+            ).description]
         result = []
         for row in rows:
             item = dict(zip(columns, row))
