@@ -1,4 +1,9 @@
+from datetime import date, timedelta
+
 from app.strategy.slo_engine import build_results
+
+
+TEST_EXPIRY = (date.today() + timedelta(days=14)).isoformat()
 
 
 def test_slo_strategy_builds_bullish_call_candidate():
@@ -6,7 +11,7 @@ def test_slo_strategy_builds_bullish_call_candidate():
         "symbol": "NIFTYCE",
         "underlying": "NIFTY",
         "instrument_type": "CE",
-        "expiry_date": "2099-01-20",
+        "expiry_date": TEST_EXPIRY,
         "strike_price": 25000,
         "ltp": 100,
         "best_bid": 99,
@@ -37,7 +42,7 @@ def test_historical_candidate_is_not_capped_by_missing_live_greeks_or_depth():
         "symbol": "AUROPHARMA26CE1700",
         "underlying": "AUROPHARMA",
         "instrument_type": "CE",
-        "expiry_date": "2099-01-20",
+        "expiry_date": TEST_EXPIRY,
         "strike_price": 1700,
         "ltp": 24.35,
         "volume": 1298550,
