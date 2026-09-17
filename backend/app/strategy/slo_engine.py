@@ -21,35 +21,59 @@ def _iv_decimal(value: Any) -> float | None:
 
 
 def candidate_score(row: dict[str, Any], direction_score: float) -> dict[str, float]:
+    """Score a candidate from evidence that is actually available.
+
+    Historical candles do not provide live bid/ask depth and may not provide
+    option greeks. Treating every missing field as a score of 50 artificially
+    capped strong historical candidates at ~58 even when directional evidence
+    was strong. We now normalize only across available evidence dimensions.
+    """
     premium = float(row.get("mid") or row.get("ltp") or 0)
     bid = float(row.get("best_bid") or 0)
     ask = float(row.get("best_ask") or 0)
     has_book = premium > 0 and bid > 0 and ask >= bid
-    spread_pct = ((ask - bid) / premium) if has_book else None
     theta_raw = row.get("theta")
     try:
         theta = abs(float(theta_raw)) if theta_raw is not None else None
     except (TypeError, ValueError):
         theta = None
-    if spread_pct is None:
-        # Missing depth is a data-quality limitation, not proof of poor liquidity.
-        # Keep the candidate visible and let the risk layer reject it if needed.
-        liquidity_score = 50.0
-    else:
+    iv_raw = row.get("iv")
+    try:
+        iv = float(iv_raw) if iv_raw is not None else None
+    except (TypeError, ValueError):
+        iv = None
+
+    direction = _clamp(abs(float(direction_score)))
+    components: list[tuple[float, float]] = [(direction, 0.45)]
+    if has_book:
+        spread_pct = (ask - bid) / premium
         liquidity_score = _clamp(100.0 * (1.0 - spread_pct / 0.10))
-    if theta is None:
-        theta_score = 50.0
+        components.append((liquidity_score, 0.20))
     else:
+        liquidity_score = None
+    if theta is not None:
         theta_ratio = theta / max(premium, 0.01)
         theta_score = _clamp(100.0 * (1.0 - theta_ratio / 0.10))
-    volatility_score = 50.0
-    direction = _clamp(abs(float(direction_score)))
-    total = 0.45 * direction + 0.20 * liquidity_score + 0.20 * theta_score + 0.15 * volatility_score
+        components.append((theta_score, 0.20))
+    else:
+        theta_score = None
+    if iv is not None:
+        # IV is retained as a neutral research factor until a calibrated
+        # volatility regime model is available. Its absence must not penalize
+        # a historical candidate.
+        volatility_score = 50.0
+        components.append((volatility_score, 0.15))
+    else:
+        volatility_score = None
+
+    total_weight = sum(weight for _, weight in components)
+    total = sum(score * weight for score, weight in components) / max(total_weight, 0.01)
+    spread_pct = ((ask - bid) / premium) if has_book else None
     return {
         "direction_score": round(direction, 2),
-        "liquidity_score": round(liquidity_score, 2),
-        "theta_score": round(theta_score, 2),
-        "volatility_score": round(volatility_score, 2),
+        "liquidity_score": round(liquidity_score, 2) if liquidity_score is not None else None,
+        "theta_score": round(theta_score, 2) if theta_score is not None else None,
+        "volatility_score": round(volatility_score, 2) if volatility_score is not None else None,
         "total_score": round(total, 2),
         "spread_pct": round(spread_pct * 100.0, 3) if spread_pct is not None else None,
     }
@@ -151,8 +175,18 @@ def _current_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any
                 continue
             diagnostics["dte_rows"] += 1
             volume = int(row.get("volume") or 0)
-            oi = int(row.get("open_interest") or 0)
-            if volume < 1000 or oi < 5000:
+            oi_raw = row.get("open_interest")
+            try:
+                oi = int(oi_raw) if oi_raw not in (None, "") else None
+            except (TypeError, ValueError):
+                oi = None
+            if volume < 1000:
+                continue
+            # Historical candle feeds can omit OI and surface it as zero.
+            # Zero/None is therefore treated as unavailable rather than as a
+            # hard rejection. A known positive OI below the threshold remains
+            # a liquidity rejection.
+            if oi is not None and oi > 0 and oi < 5000:
                 continue
             diagnostics["liquid_rows"] += 1
             if (bias == "BULLISH" and option_type != "CE") or (bias == "BEARISH" and option_type != "PE"):
@@ -198,7 +232,6 @@ def _fallback_watch(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]
             enriched = dict(row)
             enriched["mid"] = premium
             scores = candidate_score(enriched, signed_direction)
-            # Keep WATCH below the strict research threshold if the computed score is lower.
             watch_score = min(float(min_score) - 0.1, max(40.0, float(scores["total_score"])))
             scores["total_score"] = round(watch_score, 2)
             candidates.append(_make_result(
@@ -269,7 +302,6 @@ def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]],
     fallback = _fallback_watch(rows, underlyings, min_score) if not current else []
     now = datetime.now(timezone.utc)
 
-    # Persist strict candidates and fallback watches for auditability. Execution remains disabled.
     persist_rows = current + fallback
     try:
         signal_store.upsert_opportunities(persist_rows, now=now)
