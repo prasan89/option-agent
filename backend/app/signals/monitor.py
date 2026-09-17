@@ -31,13 +31,29 @@ class SignalMonitor:
                 "signals_generated":self._signals_generated,"errors":self._errors,"last_check":self._last_check,"database_available":self._db_available,"persisted_signals":self._safe_count()}
 
     @staticmethod
+    def _signal_time(raw: dict[str, Any]) -> datetime:
+        """Use the event/candle timestamp as generation time, never monitor flush time."""
+        value=raw.get("timestamp_ms")
+        if value not in (None, ""):
+            try:return datetime.fromtimestamp(float(value)/1000.0,tz=timezone.utc)
+            except (TypeError,ValueError,OSError):pass
+        value=raw.get("timestamp")
+        if value not in (None, ""):
+            try:
+                parsed=datetime.fromisoformat(str(value).replace("Z","+00:00"))
+                return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+            except ValueError:pass
+        return datetime.now(timezone.utc)
+
+    @staticmethod
     def _candidate(raw):
         score=float(raw.get("intelligence_score") or 0);confidence=str(raw.get("confidence") or "LOW").upper()
         if abs(score)<SignalMonitor.MIN_SCORE or confidence=="LOW":return None
         symbol=str(raw.get("symbol") or raw.get("trading_symbol") or raw.get("token") or "");
         if not symbol:return None
-        ts=str(raw.get("timestamp_ms") or raw.get("timestamp") or "");direction="UP" if score>0 else "DOWN"
-        return {"signal_key":f"{symbol}:{ts}:{direction}","created_at":datetime.now(timezone.utc),"symbol":symbol,"underlying":raw.get("underlying") or raw.get("underlying_symbol"),
+        generated_at=SignalMonitor._signal_time(raw)
+        ts=str(raw.get("timestamp_ms") or raw.get("timestamp") or generated_at.isoformat());direction="UP" if score>0 else "DOWN"
+        return {"signal_key":f"{symbol}:{ts}:{direction}","created_at":generated_at,"signal_generated_at":generated_at.isoformat(),"symbol":symbol,"underlying":raw.get("underlying") or raw.get("underlying_symbol"),
             "instrument_type":raw.get("instrument_type"),"expiry_date":raw.get("expiry_date"),"strike_price":raw.get("strike_price"),"ltp":raw.get("ltp"),"direction":direction,
             "bias":str(raw.get("bias") or ("BULLISH" if score>0 else "BEARISH")),"score":round(score,2),"confidence":confidence,"ml_probability_up":None,"ml_probability_down":None,
             "event":raw.get("event"),"evidence":raw.get("evidence") or [],"payload":raw}
