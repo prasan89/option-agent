@@ -16,7 +16,15 @@ EXCLUDED_PATTERNS = set()
 
 
 def _results() -> list[dict[str, Any]]:
-    live = price_action_scanner.stats.get("signals", [])
+    stats = price_action_scanner.stats
+    live = list(stats.get("signals", []))
+    # Show active daily setups as well as confirmed 15-minute signals.
+    for setup in stats.get("active_setups", []):
+        item = dict(setup)
+        item.setdefault("status", "SETUP")
+        item.setdefault("time", item.get("daily_setup_date"))
+        item.setdefault("created_at", item.get("daily_setup_date"))
+        live.append(item)
     try:
         persisted = []
         for item in signal_store.price_action_history(500):
