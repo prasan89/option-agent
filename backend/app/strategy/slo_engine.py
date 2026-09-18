@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from app.signals.store import signal_store
+from app.signals.paper_tracker import paper_signal_tracker
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
@@ -126,6 +127,8 @@ def _make_result(row: dict[str, Any], underlying: str, bias: str, signed_directi
         "direction": bias,
         "direction_score": round(signed_direction, 2),
         "signal": "BUY_CALL" if option_type == "CE" else "BUY_PUT",
+        "signal_generated_at": row.get("timestamp_ms"),
+        "quantity": int(row.get("lot_size") or 1),
         "symbol": row.get("symbol"),
         "option_type": option_type,
         "strike": strike,
@@ -303,6 +306,12 @@ def build_results(rows: list[dict[str, Any]], underlyings: list[dict[str, Any]],
     now = datetime.now(timezone.utc)
 
     persist_rows = current + fallback
+    try:
+        # Every strict/qualified option call gets its own timestamped paper tracker record.
+        paper_signal_tracker.record_candidates(current)
+        paper_signal_tracker.evaluate_open()
+    except Exception:
+        pass
     try:
         signal_store.upsert_opportunities(persist_rows, now=now)
         history = _history_rows(persist_rows)
