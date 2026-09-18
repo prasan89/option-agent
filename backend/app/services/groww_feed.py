@@ -181,18 +181,23 @@ class GrowwFeedService:
                 logger.info("Groww websocket deferred until NSE market open; sleeping %.0fs", wait)
                 time.sleep(wait)
 
+            # Start the REST fallback before websocket/client creation so
+            # an SDK or websocket failure cannot take down market-data polling.
+            with self._lock:
+                self._running = True
+                self._initializing = True
+                self._startup_error = None
+            if self._fallback_thread is None or not self._fallback_thread.is_alive():
+                self._fallback_thread = threading.Thread(
+                    target=self._poll_rest_ltp, name="groww-ltp-fallback", daemon=True
+                )
+                self._fallback_thread.start()
+
             self._stage("GET_CLIENT")
             client = groww_client._get_client()
             self._stage("CREATE_FEED")
             feed = GrowwFeed(client)
             self._feed = feed
-
-            with self._lock:
-                self._running = True
-                self._initializing = True
-                self._startup_error = None
-            self._fallback_thread = threading.Thread(target=self._poll_rest_ltp, name="groww-ltp-fallback", daemon=True)
-            self._fallback_thread.start()
 
             sdk_instruments = [
                 {"exchange": str(row["exchange"]), "segment": str(row["segment"]), "exchange_token": str(row["exchange_token"])}
