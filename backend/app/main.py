@@ -16,6 +16,7 @@ from app.api.intelligence import router as intelligence_router
 from app.api.intelligence_score import router as intelligence_score_router
 from app.api.jft import router as jft_router
 from app.api.ml import router as ml_router
+from app.api.paper_tracker import router as paper_tracker_router
 from app.api.pipeline import router as pipeline_router
 from app.api.price_action import router as price_action_router
 from app.api.price_action_history import router as price_action_history_router
@@ -33,6 +34,7 @@ from app.jft.scanner import jft_scanner
 from app.pipeline import research_pipeline
 from app.price_action.scanner import price_action_scanner
 from app.signals.monitor import signal_monitor
+from app.signals.paper_tracker import paper_signal_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +44,9 @@ app.middleware("http")(dashboard_filter_middleware)
 
 @app.middleware("http")
 async def reversal_navigation(request: Request, call_next):
-    """Add dedicated reversal tabs to the existing dashboard navigation."""
+    """Add dedicated research tabs to the existing dashboard navigation."""
     response = await call_next(request)
-    if request.url.path not in {"/dashboard", "/strategy", "/dashboard/history", "/price-action", "/price-action/history", "/jft"}:
+    if request.url.path not in {"/dashboard", "/strategy", "/dashboard/history", "/price-action", "/price-action/history", "/jft", "/reversal", "/reversal/history", "/paper-tracker"}:
         return response
     content_type = str(response.headers.get("content-type", ""))
     if "text/html" not in content_type or not hasattr(response, "body_iterator"):
@@ -54,8 +56,8 @@ async def reversal_navigation(request: Request, call_next):
         html = body.decode("utf-8")
     except UnicodeDecodeError:
         return response
-    if "/reversal" not in html and 'href="/jft"' in html:
-        links = '<a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a>'
+    if "/paper-tracker" not in html and 'href="/jft"' in html:
+        links = '<a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a><a href="/paper-tracker">Paper P&L Tracker</a>'
         active = '<a href="/jft" class="active">JFT Signals</a>'
         plain = '<a href="/jft">JFT Signals</a>'
         if active in html:
@@ -87,6 +89,7 @@ app.include_router(price_action_history_router)
 app.include_router(slo_history_router)
 app.include_router(jft_router)
 app.include_router(reversal_router)
+app.include_router(paper_tracker_router)
 app.include_router(agent_router)
 
 
@@ -95,6 +98,10 @@ def startup() -> None:
     configure_logging()
     logger.info("Option Agent API starting: version=%s environment=%s", settings.app_version, settings.environment)
     run_migrations()
+    try:
+        paper_signal_tracker.init()
+    except Exception:
+        logger.exception("Paper signal tracker initialization failed")
     research_pipeline.startup()
 
 
