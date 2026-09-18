@@ -64,6 +64,7 @@ class PaperSignalTracker:
             conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS bars_held INTEGER NOT NULL DEFAULT 0")
             conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS mfe_pct DOUBLE PRECISION NOT NULL DEFAULT 0")
             conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS mae_pct DOUBLE PRECISION NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_tracker_status ON paper_signal_tracker(status)")
             conn.commit()
 
@@ -250,14 +251,28 @@ class PaperSignalTracker:
                         break
                 if latest is None:
                     continue
-                status = hit or ("OPEN_PROFIT" if latest > entry else "OPEN_LOSS" if latest < entry else "OPEN")
-                mark_pnl = (latest-entry)*qty
-                reason = "Target reached by subsequent 5M candle." if hit == "TARGET_HIT" else "Stop reached by subsequent 5M candle." if hit == "STOP_HIT" else "No target/stop hit yet; current mark is shown as paper profit/loss."
+                market_close = end.time().replace(tzinfo=None) >= __import__("datetime").time(15, 40)
                 if hit:
-                    mark_pnl = (exit_price-entry)*qty
+                    status = hit
+                    exit_value = float(exit_price)
+                    mark_pnl = (exit_value-entry)*qty
+                    realized_pnl = mark_pnl
+                    reason = "Target reached by subsequent 5M candle." if hit == "TARGET_HIT" else "Stop reached by subsequent 5M candle."
+                elif market_close:
+                    status = "PROFIT" if latest > entry else "LOSS" if latest < entry else "FLAT"
+                    exit_at = dt if 'dt' in locals() and dt is not None else end
+                    exit_price = latest
+                    mark_pnl = (latest-entry)*qty
+                    realized_pnl = mark_pnl
+                    reason = "End-of-session paper exit at the last available 5M close."
+                else:
+                    status = "OPEN_PROFIT" if latest > entry else "OPEN_LOSS" if latest < entry else "OPEN"
+                    mark_pnl = (latest-entry)*qty
+                    realized_pnl = 0.0
+                    reason = "No target/stop hit yet; current mark is shown as paper profit/loss."
                 with self.connect() as conn:
-                    conn.execute("""UPDATE paper_signal_tracker SET last_observed_at=%s,current_price=%s,mark_pnl=%s,pnl_pct=%s,status=%s,exit_at=%s,exit_price=%s,bars_held=%s,mfe_pct=%s,mae_pct=%s,outcome_reason=%s WHERE signal_key=%s""",
-                        (now, latest, mark_pnl, ((latest-entry)/entry*100.0) if entry else 0.0, status, exit_at, exit_price, bars, mfe, mae, reason, item["signal_key"]))
+                    conn.execute("""UPDATE paper_signal_tracker SET last_observed_at=%s,current_price=%s,mark_pnl=%s,realized_pnl=%s,pnl_pct=%s,status=%s,exit_at=%s,exit_price=%s,bars_held=%s,mfe_pct=%s,mae_pct=%s,outcome_reason=%s WHERE signal_key=%s""",
+                        (now, latest, mark_pnl, realized_pnl, ((latest-entry)/entry*100.0) if entry else 0.0, status, exit_at, exit_price, bars, mfe, mae, reason, item["signal_key"]))
                     conn.commit()
                 updated += 1
             except Exception:
