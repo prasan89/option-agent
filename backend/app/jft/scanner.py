@@ -211,7 +211,7 @@ class JFTScanner:
                 "signal_key": f"JFT:{key[0]}:{key[1]}:{key[2]}:{key[3]}", "created_at": now,
                 "symbol": key[0], "underlying": key[0], "instrument_type": "JFT",
                 "ltp": signal["price"], "direction": signal["signal"], "bias": signal["direction"],
-                "score": 100.0, "confidence": "RULE", "event": "JFT_LEVEL_CROSS",
+                "score": 100.0, "confidence": "RULE", "event": "JFT_REVERSAL" if str(signal.get("trigger") or "").upper() == "REVERSAL" else "JFT_LEVEL_CROSS",
                 "evidence": [signal["reason"]], "payload": signal,
             }])
         except Exception as exc:
