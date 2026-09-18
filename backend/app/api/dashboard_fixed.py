@@ -79,7 +79,25 @@ def dashboard_data() -> dict[str, Any]:
         performance = research_store.label_summary(horizon=5)
     except Exception as exc:
         performance = {"available": False, "error": str(exc)}
-    return {"market": market, "source_mode": source_mode, "session": hist, "regime": _regime(underlyings), "flow": _flow(rows), "underlyings": underlyings[:25], "opportunities": engine.get("results", [])[:50], "strategy": {"count": engine.get("count", 0), "watch_count": engine.get("watch_count", 0), "history_count": engine.get("history_count", 0), "method": engine.get("method", "SLO_OPTIONS_V2_LIVE_ADAPTER"), "diagnostics": engine.get("diagnostics", {}), "research_only": True, "trading": "DISABLED"}, "signals": signals, "signal_count": signal_count, "performance": performance, "system": {"scanner_running": scan.get("running", False), "feed_contracts": scan.get("symbols_available_last_check", 0), "feed_events": scan.get("feed_events", 0), "ranking_ready": scan.get("ranking_ready", False), "scanner_error": scan.get("last_error") or scan.get("error"), "historical_running": hist.get("running", False), "historical_contracts": hist.get("contracts", 0), "historical_requests": hist.get("requests", 0), "historical_errors": hist.get("errors", 0)}}
+    return {"market": market, "source_mode": source_mode, "session": hist, "regime": _regime(underlyings), "flow": _flow(rows), "underlyings": underlyings[:25], "opportunities": engine.get("results", [])[:50], "strategy": {"count": engine.get("count", 0), "watch_count": engine.get("watch_count", 0), "history_count": engine.get("history_count", 0), "method": engine.get("method", "SLO_OPTIONS_V2_LIVE_ADAPTER"), "diagnostics": engine.get("diagnostics", {}), "research_only": True, "trading": "DISABLED"}, "signals": signals, "signal_count": signal_count, "performance": performance, "system": {
+            "scanner_running": scan.get("running", False),
+            "feed_contracts": scan.get("symbols_available_last_check", 0),
+            "feed_events": scan.get("feed_events", 0),
+            "feed_state_symbols": scan.get("state_symbols", 0),
+            "feed_state_with_ltp": scan.get("state_with_ltp", 0),
+            "minute_history_ready": scan.get("minute_history_ready", 0),
+            "feed_age_seconds": scan.get("last_feed_event_age_seconds"),
+            "feed_ready": scan.get("feed_ready", False),
+            "feed_starting": scan.get("feed_starting", False),
+            "feed_startup_stage": scan.get("feed_startup_stage"),
+            "feed_startup_error": scan.get("feed_startup_error"),
+            "ranking_ready": scan.get("ranking_ready", False),
+            "scanner_error": scan.get("last_error") or scan.get("error"),
+            "historical_running": hist.get("running", False),
+            "historical_contracts": hist.get("contracts", 0),
+            "historical_requests": hist.get("requests", 0),
+            "historical_errors": hist.get("errors", 0)
+        }}
 
 
 @router.get("/dashboard/data")
