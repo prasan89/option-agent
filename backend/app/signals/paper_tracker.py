@@ -172,7 +172,7 @@ class PaperSignalTracker:
                      item.get("direction"), signal, item.get("total_score", item.get("score")),
                      premium, premium, stop, target, quantity, pnl, 0.0,
                      "Signal recorded; waiting for subsequent option candles to determine target/stop outcome.",
-                     psycopg.types.json.Jsonb(item), generated),
+                     Jsonb(item), generated),
                 )
                 written += 1
             conn.commit()
