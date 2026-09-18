@@ -21,7 +21,8 @@ class PriceActionScanner:
     """Daily-chart structural setup + 15-minute breakout confirmation scanner."""
 
     MIN_SCORE = 65.0
-    DAILY_HISTORY_DAYS = 220
+    # Groww currently documents 180 days as the maximum request duration for 1-day candles.
+    DAILY_HISTORY_DAYS = 170
     INTRADAY_HISTORY_DAYS = 30
     MAX_UNDERLYINGS = 50
     MIN_DAILY_BARS = 60
@@ -46,6 +47,7 @@ class PriceActionScanner:
     def __init__(self) -> None:
         self._lock=threading.Lock(); self._running=False; self._thread=None
         self._cache={}; self._cache_date=None; self._signals=[]
+        self._daily_setups={}; self._daily_cache_key=None; self._daily_cache_errors=0
         self._alerted=set(); self._checks=0; self._daily_requests=0
         self._intraday_requests=0; self._errors=0; self._last_error=None
         self._last_scan=None; self._last_signal=None; self._setups=0
@@ -62,6 +64,8 @@ class PriceActionScanner:
                     "daily_requests":self._daily_requests,"intraday_requests":self._intraday_requests,
                     "setups":self._setups,"triggered":self._triggered,"errors":self._errors,
                     "last_error":self._last_error,"last_scan":self._last_scan,"last_signal":self._last_signal,
+                    "daily_cache_key":self._daily_cache_key,"daily_setups":len(self._daily_setups),
+                    "daily_cache_errors":self._daily_cache_errors,
                     "pattern_counts":dict(self._pattern_counts),"supported_patterns":list(self.PATTERN_NAMES),
                     "signals":list(self._signals[:50])}
 
@@ -153,28 +157,70 @@ class PriceActionScanner:
         candidates=PriceActionPatternDetector.daily_setup_candidates(completed,len(completed)-1)
         return candidates[0] if candidates else None
 
-    def _scan_underlying(self, underlying, today):
-        # Price Action is historical REST-only. Do not request future timestamps during market hours.
-        daily_end = today - timedelta(days=1)
-        daily = groww_client.historical_candles(
-            f"NSE-{underlying}",
-            f"{today-timedelta(days=self.DAILY_HISTORY_DAYS)} 09:15:00",
-            f"{daily_end} 15:40:00",
-            "CASH",
-            "1day",
+    def _build_daily_cache(self, today):
+        # During a live session the current daily candle is incomplete, so use
+        # the prior completed session. Outside market hours the latest completed
+        # daily candle is allowed. This cache is rebuilt only when that state
+        # changes, not every five-minute scan.
+        live = self._market_open()
+        cache_key=f"{today.isoformat()}:{'LIVE' if live else 'CLOSED'}"
+        if cache_key == self._daily_cache_key:
+            return
+        daily_end = today - timedelta(days=1) if live else today
+        universe=self._universe()
+        setups={}
+        errors=0
+        for underlying in universe:
+            try:
+                start_date=daily_end-timedelta(days=self.DAILY_HISTORY_DAYS)
+                daily=groww_client.historical_candles(
+                    f"NSE-{underlying}",
+                    f"{start_date} 09:15:00",
+                    f"{daily_end} 15:40:00",
+                    "CASH",
+                    "1day",
+                )
+                self._daily_requests+=1
+                drows=self._parse(daily)
+                setup=self._daily_setup(drows)
+                if setup:
+                    setups[underlying]={"setup":setup,"daily":drows}
+            except Exception as exc:
+                errors+=1
+                self._last_error=f"{underlying}: daily scan: {exc}"
+                logger.warning("Daily price-action setup scan failed for %s: %s",underlying,exc)
+        with self._lock:
+            self._daily_setups=setups
+            self._daily_cache_key=cache_key
+            self._daily_cache_errors=errors
+        logger.info(
+            "Daily price-action cache: underlyings=%s setups=%s requests=%s errors=%s key=%s",
+            len(universe),len(setups),self._daily_requests,errors,cache_key
         )
-        self._daily_requests+=1
-        drows=self._parse(daily)
-        if len(drows)<self.MIN_DAILY_BARS:return None
-        setup=self._daily_setup(drows)
-        if not setup:return None
+
+    @staticmethod
+    def _completed_15m(rows, now):
+        completed=[]
+        for row in rows:
+            dt=PriceActionScanner._dt(str(row["ts"]))
+            if not dt or dt.weekday()>=5:
+                continue
+            # Groww candle timestamps represent the candle start. Only use a
+            # candle after its full 15-minute interval has closed.
+            if dt + timedelta(minutes=15) <= now:
+                completed.append(row)
+        return completed
+
+    def _scan_underlying(self, underlying, daily_item, today):
+        setup=daily_item["setup"]
+        drows=daily_item["daily"]
         start=today-timedelta(days=self.INTRADAY_HISTORY_DAYS)
-        now = datetime.now(IST)
-        intraday_end = min(
-            now,
-            datetime.combine(today, datetime.min.time(), tzinfo=IST).replace(hour=15, minute=40),
-        )
-        intra = groww_client.historical_candles(
+        now=datetime.now(IST)
+        if self._market_open():
+            intraday_end=now
+        else:
+            intraday_end=datetime.combine(today,datetime.min.time(),tzinfo=IST).replace(hour=15,minute=40)
+        intra=groww_client.historical_candles(
             f"NSE-{underlying}",
             f"{start} 09:15:00",
             intraday_end.strftime("%Y-%m-%d %H:%M:%S"),
@@ -182,32 +228,46 @@ class PriceActionScanner:
             "15minute",
         )
         self._intraday_requests+=1
-        irows=[x for x in self._parse(intra) if self._dt(str(x["ts"])) and self._dt(str(x["ts"])).date()==today]
+        parsed=self._parse(intra)
+        if self._market_open():
+            session_date=today
+        else:
+            session_dates=[self._dt(str(x["ts"])).date() for x in parsed if self._dt(str(x["ts"]))]
+            session_date=max(session_dates) if session_dates else None
+        irows=[x for x in self._completed_15m(parsed,now) if self._dt(str(x["ts"])).date()==session_date]
         if len(irows)<self.MIN_15M_BARS:return {"setup":setup}
         triggered=None
         for i in range(1,len(irows)):
             prev=float(irows[i-1]["close"]); close=float(irows[i]["close"]); level=float(setup["trigger_level"])
             crossed=(prev<=level<close) if setup["signal"]=="BUY" else (prev>=level>close)
             if crossed:
-                triggered=cls._signal(self,underlying,drows,irows,i,setup) if False else self._signal(underlying,drows,irows,i,setup)
+                triggered=self._signal(underlying,drows,irows,i,setup)
                 if triggered: break
         return {"setup":setup,"confirmed":triggered}
 
     def _build_cache(self):
         today=datetime.now(IST).date()
+        self._build_daily_cache(today)
         cache={}; counts=Counter(); errors=0
-        for underlying in self._universe():
+        for underlying,daily_item in list(self._daily_setups.items()):
             try:
-                result=self._scan_underlying(underlying,today)
-                if result: cache[underlying]=result; counts[str(result.get("setup",{}).get("pattern"))]+=1
+                result=self._scan_underlying(underlying,daily_item,today)
+                if result:
+                    cache[underlying]=result
+                    counts[str(result.get("setup",{}).get("pattern"))]+=1
             except Exception as exc:
-                errors+=1; self._errors+=1; self._last_error=f"{underlying}: {exc}"; logger.exception("Daily/15m scan failed for %s",underlying)
+                errors+=1; self._errors+=1; self._last_error=f"{underlying}: 15m scan: {exc}"
+                logger.exception("Daily/15m scan failed for %s",underlying)
         with self._lock:
-            self._cache=cache; self._cache_date=today.isoformat() if errors==0 else None
+            self._cache=cache
+            self._cache_date=today.isoformat() if errors==0 else None
             self._setups=sum(1 for x in cache.values() if x.get("setup"))
             self._triggered=sum(1 for x in cache.values() if x.get("confirmed"))
             self._pattern_counts=counts
-        logger.info("Daily pattern + 15m breakout cache: underlyings=%s daily_requests=%s 15m_requests=%s errors=%s",len(cache),self._daily_requests,self._intraday_requests,errors)
+        logger.info(
+            "Daily pattern + 15m breakout cache: setups=%s daily_requests=%s 15m_requests=%s errors=%s",
+            len(cache),self._daily_requests,self._intraday_requests,errors
+        )
 
     def _emit(self, signal):
         now=datetime.now(IST)
@@ -232,7 +292,10 @@ class PriceActionScanner:
 
     def _scan_once(self):
         today=datetime.now(IST).date()
-        if self._cache_date!=today.isoformat() or self._market_open(): self._build_cache()
+        # Rebuild during market hours every cycle for fresh 15M confirmation,
+        # but reuse the expensive daily setup cache.
+        if self._cache_date!=today.isoformat() or self._market_open():
+            self._build_cache()
         for cached in list(self._cache.values()):
             if cached.get("confirmed"): self._emit(cached["confirmed"])
         try:
