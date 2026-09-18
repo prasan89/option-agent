@@ -148,7 +148,7 @@ class PriceActionScanner:
         return ordered[:self.MAX_UNDERLYINGS]
 
     def _daily_setup(self, rows):
-        completed=rows[:-1] if rows else rows
+        completed=rows
         if len(completed)<self.MIN_DAILY_BARS:return None
         candidates=PriceActionPatternDetector.daily_setup_candidates(completed,len(completed)-1)
         return candidates[0] if candidates else None
