@@ -45,11 +45,9 @@ app.middleware("http")(dashboard_filter_middleware)
 
 
 @app.middleware("http")
-async def reversal_navigation(request: Request, call_next):
-    """Add dedicated research tabs to the existing dashboard navigation."""
+async def global_navigation(request: Request, call_next):
+    """Inject one consistent navigation bar into every HTML research page."""
     response = await call_next(request)
-    if request.url.path not in {"/dashboard", "/strategy", "/dashboard/history", "/price-action", "/price-action/history", "/jft", "/reversal", "/reversal/history", "/paper-tracker", "/price-action/paper-pnl"}:
-        return response
     content_type = str(response.headers.get("content-type", ""))
     if "text/html" not in content_type or not hasattr(response, "body_iterator"):
         return response
@@ -58,14 +56,48 @@ async def reversal_navigation(request: Request, call_next):
         html = body.decode("utf-8")
     except UnicodeDecodeError:
         return response
-    if "/paper-tracker" not in html and 'href="/jft"' in html:
-        links = '<a href="/reversal">Reversal</a><a href="/reversal/history">Reversal History</a><a href="/paper-tracker">Paper P&L Tracker</a>'
-        active = '<a href="/jft" class="active">JFT Signals</a>'
-        plain = '<a href="/jft">JFT Signals</a>'
-        if active in html:
-            html = html.replace(active, f'{plain}{links}', 1)
-        elif plain in html:
-            html = html.replace(plain, f'{plain}{links}', 1)
+
+    path = request.url.path.rstrip("/") or "/"
+    active_map = {
+        "/dashboard": "/dashboard",
+        "/strategy": "/strategy",
+        "/dashboard/history": "/dashboard/history",
+        "/price-action": "/price-action",
+        "/price-action/history": "/price-action/history",
+        "/price-action/paper-pnl": "/price-action/paper-pnl",
+        "/jft": "/jft",
+        "/reversal": "/reversal",
+        "/reversal/history": "/reversal/history",
+        "/paper-tracker": "/paper-tracker",
+    }
+    links = [
+        ("/dashboard", "Dashboard"),
+        ("/strategy", "SLO Strategy"),
+        ("/dashboard/history", "SLO History"),
+        ("/price-action", "Price Action"),
+        ("/price-action/history", "Price Action History"),
+        ("/price-action/paper-pnl", "Candlestick P&L"),
+        ("/jft", "JFT Signals"),
+        ("/reversal", "Reversal"),
+        ("/reversal/history", "Reversal History"),
+        ("/paper-tracker", "SLO Option P&L"),
+    ]
+    nav_items = "".join(
+        f'<a href="{href}" class="active" aria-current="page">{label}</a>'
+        if active_map.get(path) == href
+        else f'<a href="{href}">{label}</a>'
+        for href, label in links
+    )
+    nav = f'''<style id="global-research-nav-style">
+.global-research-nav{{display:flex;gap:7px;flex-wrap:wrap;align-items:center;padding:10px 12px;margin:0 0 18px;background:#0d1526;border:1px solid #26334d;border-radius:10px;position:sticky;top:8px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.18)}}
+.global-research-nav a{{color:#b9c7df;text-decoration:none;border:1px solid #26334d;padding:7px 10px;border-radius:7px;background:#10182a;font:12px/1.2 system-ui,-apple-system,sans-serif;white-space:nowrap}}
+.global-research-nav a:hover{{color:#fff;border-color:#52678f;background:#17233b}}
+.global-research-nav a.active{{color:#fff;border-color:#6f8fca;background:#1a2945;box-shadow:inset 0 0 0 1px rgba(113,167,255,.18)}}
+</style><nav class="global-research-nav" aria-label="Research navigation">{nav_items}</nav>'''
+    if 'id="global-research-nav-style"' not in html and "<body" in html:
+        body_pos = html.find(">", html.find("<body")) + 1
+        html = html[:body_pos] + nav + html[body_pos:]
+
     headers = dict(response.headers)
     headers.pop("content-length", None)
     return Response(content=html, status_code=response.status_code, headers=headers, media_type="text/html")
