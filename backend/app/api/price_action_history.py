@@ -10,6 +10,8 @@ from app.signals.store import signal_store
 
 router = APIRouter(tags=["price-action-history"])
 
+EXCLUDED_PATTERNS = {"5M RANGE BREAKOUT", "5M RANGE BREAKDOWN", "RISING WEDGE BREAKOUT", "RISING WEDGE BREAKDOWN"}
+
 
 def _history() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -20,12 +22,14 @@ def _history() -> list[dict[str, Any]]:
             payload = item.get("payload") or {}
             if isinstance(payload, dict):
                 row = dict(payload)
+                if str(row.get("pattern") or "") in EXCLUDED_PATTERNS:
+                    continue
                 row.setdefault("created_at", item.get("created_at"))
                 rows.append(row)
     except Exception:
         pass
 
-    rows.extend(price_action_scanner.stats.get("signals", []))
+    rows.extend(x for x in price_action_scanner.stats.get("signals", []) if str(x.get("pattern") or "") not in EXCLUDED_PATTERNS)
     seen: set[tuple[str, str, str, str, str]] = set()
     output: list[dict[str, Any]] = []
     for row in rows:
@@ -65,7 +69,7 @@ HTML = r'''<!doctype html>
 <div class="top"><div><div class="title">Price Action History</div><div class="sub">Persistent daily research record — setups remain visible after the live state changes</div><div class="nav"><a href="/dashboard">Flow Dashboard</a><a href="/strategy">SLO Options</a><a href="/price-action">Price Action</a><a href="/price-action/history" class="active">Price Action History</a></div></div><div id="status" class="status">Loading…</div></div>
 <div class="grid"><div class="card"><div class="label">All Records</div><div id="count" class="value">—</div></div><div class="card"><div class="label">Setups</div><div id="setups" class="value amber">—</div><div class="small">daily setup + 5m watch</div></div><div class="card"><div class="label">Confirmed</div><div id="confirmed" class="value bull">—</div><div class="small">5m trigger + volume</div></div><div class="card"><div class="label">Scanner</div><div id="scanner" class="value">—</div><div id="scanmeta" class="small">—</div></div></div>
 <div class="panel"><div class="head"><strong>Today's Price Action Lifecycle</strong><span id="updated" class="small">—</span></div><div class="tabs"><button id="allBtn" class="active" onclick="setFilter('ALL')">All</button><button id="setupBtn" onclick="setFilter('SETUP')">Setups</button><button id="confirmedBtn" onclick="setFilter('CONFIRMED')">Confirmed</button><button id="buyBtn" onclick="setFilter('BUY')">BUY</button><button id="sellBtn" onclick="setFilter('SELL')">SELL</button></div><div class="sortbar"><label for="sortField">Sort</label><select id="sortField" onchange="setSortField(this.value)"><option value="score">Score</option><option value="time">Time</option><option value="underlying">Underlying</option><option value="signal">Signal</option><option value="status">Status</option><option value="pattern">Pattern</option><option value="trigger_level">Trigger</option><option value="close_5min">5M Price</option><option value="vol_ratio_5min">5M Volume</option><option value="ema20">EMA20</option><option value="ema50">EMA50</option></select><button id="ascBtn" onclick="setSortDir('asc')">↑ ASC</button><button id="descBtn" class="active" onclick="setSortDir('desc')">↓ DESC</button><span id="sortInfo" class="small">Score ↓</span></div><div class="table"><table><thead><tr><th>#</th><th class="sortable" onclick="sortBy('time')">Time<span class="sortmark" id="mark-time"></span></th><th class="sortable" onclick="sortBy('underlying')">Underlying<span class="sortmark" id="mark-underlying"></span></th><th class="sortable" onclick="sortBy('signal')">Signal<span class="sortmark" id="mark-signal"></span></th><th class="sortable" onclick="sortBy('status')">Status<span class="sortmark" id="mark-status"></span></th><th class="sortable" onclick="sortBy('pattern')">Pattern<span class="sortmark" id="mark-pattern"></span></th><th class="sortable" onclick="sortBy('score')">Score<span class="sortmark" id="mark-score"></span></th><th class="sortable" onclick="sortBy('trigger_level')">Trigger<span class="sortmark" id="mark-trigger_level"></span></th><th class="sortable" onclick="sortBy('close_5min')">5M Price<span class="sortmark" id="mark-close_5min"></span></th><th class="sortable" onclick="sortBy('vol_ratio_5min')">5M Vol<span class="sortmark" id="mark-vol_ratio_5min"></span></th><th class="sortable" onclick="sortBy('ema20')">EMA20<span class="sortmark" id="mark-ema20"></span></th><th class="sortable" onclick="sortBy('ema50')">EMA50<span class="sortmark" id="mark-ema50"></span></th><th class="sortable">Daily Close</th><th>Reason</th></tr></thead><tbody id="rows"><tr><td colspan="14" class="empty">Loading history…</td></tr></tbody></table></div></div>
-<div class="panel"><div class="head"><strong>What this fixes</strong></div><div class="metrics"><div class="metric"><span>Before</span><b>A setup existed only in memory and was emitted only for breakout/breakdown watches.</b></div><div class="metric"><span>Now</span><b>Every qualifying daily setup is persisted after its 5-minute evaluation.</b></div><div class="metric"><span>Lifecycle</span><b>SETUP → CONFIRMED is visible as separate research records.</b></div><div class="metric"><span>Safety</span><b class="amber">Research only — trading remains disabled.</b></div></div></div>
+<div class="panel"><div class="head"><strong>What this fixes</strong></div><div class="metrics"><div class="metric"><span>Before</span><b>Historical setup evaluation was mixed with the pattern lifecycle.</b></div><div class="metric"><span>Now</span><b>Every qualifying daily setup is persisted after its 5-minute evaluation.</b></div><div class="metric"><span>Lifecycle</span><b>SETUP → CONFIRMED is visible as separate research records.</b></div><div class="metric"><span>Safety</span><b class="amber">Research only — trading remains disabled.</b></div></div></div>
 </div><script>
 const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));const fmt=(v,d=2)=>v==null||v===''?'—':Number.isFinite(Number(v))?Number(v).toFixed(d):esc(v);let all=[];let filter='ALL';let sortField='score';let sortDir='desc';
 const sortLabels={score:'Score',time:'Time',underlying:'Underlying',signal:'Signal',status:'Status',pattern:'Pattern',trigger_level:'Trigger',close_5min:'5M Price',vol_ratio_5min:'5M Volume',ema20:'EMA20',ema50:'EMA50'};
