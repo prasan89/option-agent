@@ -66,6 +66,10 @@ class PriceActionScanner:
                     "last_error":self._last_error,"last_scan":self._last_scan,"last_signal":self._last_signal,
                     "daily_cache_key":self._daily_cache_key,"daily_setups":len(self._daily_setups),
                     "daily_cache_errors":self._daily_cache_errors,
+                    "active_setups":[
+                        {"underlying":u,**(v.get("setup") or {}),"status":"SETUP"}
+                        for u,v in self._daily_setups.items()
+                    ][:50],
                     "pattern_counts":dict(self._pattern_counts),"supported_patterns":list(self.PATTERN_NAMES),
                     "signals":list(self._signals[:50])}
 
@@ -193,6 +197,7 @@ class PriceActionScanner:
             self._daily_setups=setups
             self._daily_cache_key=cache_key
             self._daily_cache_errors=errors
+            self._errors += errors
         logger.info(
             "Daily price-action cache: underlyings=%s setups=%s requests=%s errors=%s key=%s",
             len(universe),len(setups),self._daily_requests,errors,cache_key
