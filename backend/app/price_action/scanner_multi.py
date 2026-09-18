@@ -33,6 +33,8 @@ class PriceActionScanner:
         "TRIANGLE BREAKOUT", "TRIANGLE BREAKDOWN",
         "BULL FLAG BREAKOUT", "BEAR FLAG BREAKDOWN",
         "ROUNDING BOTTOM BREAKOUT", "ROUNDING TOP BREAKDOWN",
+        "DOUBLE BOTTOM", "DOUBLE TOP", "TRIPLE BOTTOM", "TRIPLE TOP",
+        "CUP & HANDLE", "INVERSE CUP & HANDLE",
     )
 
     def __init__(self) -> None:
