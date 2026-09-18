@@ -206,7 +206,7 @@ class GrowwFeedService:
             except Exception as exc:
                 with self._lock:
                     self._errors += 1
-                    self._startup_error = exc
+                    self._startup_error = None
                 logger.exception("Groww LTP subscription failed; keeping REST LTP fallback alive")
 
             self._stage("SUBSCRIBE_MARKET_DEPTH")
