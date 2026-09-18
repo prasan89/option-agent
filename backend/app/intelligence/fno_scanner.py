@@ -26,6 +26,7 @@ class FNOScanner:
     MAX_UNDERLYING_RESULTS = 50
     EXPIRY_MONTHS_AHEAD = 2
     HISTORY_SECONDS = 180
+    MINUTE_HISTORY_SECONDS = 60
     MIN_SCORE = 0.05
 
     def __init__(self) -> None:
@@ -51,6 +52,7 @@ class FNOScanner:
         self._meta_by_token: dict[str, dict[str, Any]] = {}
         self._state: dict[str, dict[str, Any]] = {}
         self._history: dict[str, deque[tuple[int, float]]] = defaultdict(lambda: deque(maxlen=240))
+        self._last_feed_event_at: float | None = None
         self._lock = threading.Lock()
 
     @property
@@ -60,7 +62,10 @@ class FNOScanner:
     @property
     def stats(self) -> dict[str, Any]:
         with self._lock:
-            ranking_ready = any(row.get("change_pct_since_last_minute") is not None for row in self._state.values())
+            ltp_rows = sum(1 for row in self._state.values() if row.get("ltp") is not None)
+            minute_ready = sum(1 for row in self._state.values() if row.get("change_pct_since_last_minute") is not None)
+            ranking_ready = minute_ready > 0
+            feed_age = None if self._last_feed_event_at is None else round(max(0.0, time.time() - self._last_feed_event_at), 1)
             return {
                 "running": self.running,
                 "mode": "LIVE_FEED",
@@ -79,6 +84,14 @@ class FNOScanner:
                 "invalid_symbols_cached": 0,
                 "diagnostic_requests_last_check": 0,
                 "feed_events": self._feed_events,
+                "state_symbols": len(self._state),
+                "state_with_ltp": ltp_rows,
+                "minute_history_ready": minute_ready,
+                "last_feed_event_age_seconds": feed_age,
+                "feed_ready": feed_service.running,
+                "feed_starting": feed_service.starting,
+                "feed_startup_stage": feed_service.stats.get("startup_stage"),
+                "feed_startup_error": feed_service.stats.get("startup_error"),
                 "enrichment_requests": self._enrichment_requests,
                 "enrichment_errors": self._enrichment_errors,
                 "errors": self._errors,
@@ -199,6 +212,7 @@ class FNOScanner:
         state["data_completeness"] = "FEED_LTP_DEPTH"
         with self._lock:
             self._feed_events += 1
+            self._last_feed_event_at = time.time()
 
     def _on_feed_event(self, event: dict[str, Any]) -> None:
         try:
@@ -419,6 +433,13 @@ class FNOScanner:
         }
         if not self._meta_by_token:
             raise RuntimeError("No scanner metadata matched the Groww live-feed subscriptions")
+        with self._lock:
+            self._state.clear()
+            self._history.clear()
+            self._latest = []
+            self._latest_underlyings = []
+            self._feed_events = 0
+            self._last_feed_event_at = None
         self._subscription = research_event_bus.subscribe("market.raw", self._on_feed_event)
         self._running = True
         self._thread = threading.Thread(target=self._run, name="fno-stream-scanner", daemon=True)
