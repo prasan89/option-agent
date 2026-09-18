@@ -21,7 +21,13 @@ def _history() -> list[dict[str, Any]]:
                 continue
             payload = item.get("payload") or {}
             if isinstance(payload, dict):
-                row = dict(payload)
+                actual = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+                row = dict(actual)
+                row.setdefault("created_at", item.get("created_at") or payload.get("created_at"))
+                row.setdefault("symbol", item.get("symbol") or payload.get("symbol"))
+                row.setdefault("underlying", item.get("underlying") or payload.get("underlying"))
+                row.setdefault("signal", item.get("direction") or payload.get("direction"))
+                row.setdefault("score", item.get("score") or payload.get("score"))
                 if str(row.get("pattern") or "") in EXCLUDED_PATTERNS:
                     continue
                 row.setdefault("created_at", item.get("created_at"))
