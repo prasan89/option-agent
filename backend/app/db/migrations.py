@@ -172,5 +172,16 @@ def run_migrations() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_opp_history_day ON opportunity_history(trading_day, last_seen_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_opp_history_underlying ON opportunity_history(underlying, trading_day)")
 
+        conn.execute("CREATE TABLE IF NOT EXISTS paper_signal_tracker (id BIGSERIAL PRIMARY KEY, signal_key TEXT NOT NULL UNIQUE, generated_at TIMESTAMPTZ NOT NULL, last_observed_at TIMESTAMPTZ NOT NULL, underlying TEXT NOT NULL, symbol TEXT NOT NULL, option_type TEXT, strike DOUBLE PRECISION, expiry TEXT, direction TEXT, signal TEXT, score DOUBLE PRECISION, entry_price DOUBLE PRECISION NOT NULL, current_price DOUBLE PRECISION NOT NULL, stop_price DOUBLE PRECISION, target_price DOUBLE PRECISION, quantity INTEGER NOT NULL DEFAULT 0, realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0, mark_pnl DOUBLE PRECISION NOT NULL DEFAULT 0, pnl_pct DOUBLE PRECISION NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'OPEN', outcome_reason TEXT, metadata JSONB NOT NULL DEFAULT '{}'::jsonb)")
+
+        conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS entry_at TIMESTAMPTZ")
+        conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS exit_at TIMESTAMPTZ")
+        conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS exit_price DOUBLE PRECISION")
+        conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS bars_held INTEGER NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS mfe_pct DOUBLE PRECISION NOT NULL DEFAULT 0")
+        conn.execute("ALTER TABLE paper_signal_tracker ADD COLUMN IF NOT EXISTS mae_pct DOUBLE PRECISION NOT NULL DEFAULT 0")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_tracker_generated ON paper_signal_tracker(generated_at DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_tracker_status ON paper_signal_tracker(status)")
+
         conn.commit()
         logger.info("Database schema migrations completed successfully")
