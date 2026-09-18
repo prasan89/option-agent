@@ -31,7 +31,16 @@ def _results() -> list[dict[str, Any]]:
             if item.get("instrument_type") == "PRICE_ACTION":
                 payload = item.get("payload") or {}
                 if isinstance(payload, dict):
-                    persisted.append(payload)
+                    # signal_store stores the complete DB record in payload;
+                    # unwrap the actual Price Action payload for the UI.
+                    actual = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
+                    row = dict(actual)
+                    row.setdefault("created_at", item.get("created_at") or payload.get("created_at"))
+                    row.setdefault("symbol", item.get("symbol") or payload.get("symbol"))
+                    row.setdefault("underlying", item.get("underlying") or payload.get("underlying"))
+                    row.setdefault("signal", item.get("direction") or payload.get("direction"))
+                    row.setdefault("score", item.get("score") or payload.get("score"))
+                    persisted.append(row)
         combined = live + persisted
         seen: set[str] = set()
         output: list[dict[str, Any]] = []
