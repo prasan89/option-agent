@@ -151,6 +151,80 @@ class PriceActionPatternDetector:
                 return [{"pattern": "ROUNDING TOP BREAKDOWN", "signal": "SELL", "trigger_level": trigger, "quality": 78.0, "detail": "Inverted U-shaped 5-minute structure completed with support breakdown."}]
         return []
 
+
+    @classmethod
+    def daily_setup_candidates(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
+        """Build daily-chart pattern setups; the returned level is NOT a daily breakout.
+        A separate 15-minute close must cross it before a signal is emitted."""
+        if i < 45:
+            return []
+        out: list[dict[str, Any]] = []
+        start = max(0, i - 100)
+        highs, lows = cls._pivots(rows, start, i + 1, 2)
+
+        if len(highs) >= 3:
+            left, head, right = highs[-3:]
+            if head[1] > left[1] and head[1] > right[1] and cls._near(left[1], right[1], 0.04):
+                neckline = (min(cls._low(rows, j) for j in range(left[0], head[0] + 1)) +
+                            min(cls._low(rows, j) for j in range(head[0], right[0] + 1))) / 2.0
+                if float(rows[i]["close"]) >= neckline:
+                    out.append({"pattern":"HEAD & SHOULDERS","signal":"SELL","trigger_level":neckline,
+                                "quality":88.0,"detail":"Daily head-and-shoulders structure; 15-minute close below neckline required."})
+
+        if len(lows) >= 3:
+            left, head, right = lows[-3:]
+            if head[1] < left[1] and head[1] < right[1] and cls._near(left[1], right[1], 0.04):
+                neckline = (max(cls._high(rows, j) for j in range(left[0], head[0] + 1)) +
+                            max(cls._high(rows, j) for j in range(head[0], right[0] + 1))) / 2.0
+                if float(rows[i]["close"]) <= neckline:
+                    out.append({"pattern":"INVERSE HEAD & SHOULDERS","signal":"BUY","trigger_level":neckline,
+                                "quality":88.0,"detail":"Daily inverse head-and-shoulders structure; 15-minute close above neckline required."})
+
+        if len(highs) >= 2 and len(lows) >= 2:
+            hs, ls = cls._norm_slope(highs[-4:]), cls._norm_slope(lows[-4:])
+            upper, lower = highs[-1][1], lows[-1][1]
+            if hs < -0.02 and ls > 0.02 and upper > lower:
+                close = float(rows[i]["close"])
+                if close <= upper:
+                    out.append({"pattern":"TRIANGLE BREAKOUT","signal":"BUY","trigger_level":upper,
+                                "quality":82.0,"detail":"Daily converging triangle; 15-minute close above daily resistance required."})
+                if close >= lower:
+                    out.append({"pattern":"TRIANGLE BREAKDOWN","signal":"SELL","trigger_level":lower,
+                                "quality":82.0,"detail":"Daily converging triangle; 15-minute close below daily support required."})
+
+        if i >= 28:
+            impulse_start, pole_end = i - 22, i - 10
+            pole_move = (cls._close(rows, pole_end) - cls._close(rows, impulse_start)) / max(abs(cls._close(rows, impulse_start)), 1e-9)
+            support, resistance = cls._range(rows, pole_end, i + 1)
+            cons_move = (cls._close(rows, i) - cls._close(rows, pole_end)) / max(abs(cls._close(rows, pole_end)), 1e-9)
+            if pole_move >= 0.025 and abs(cons_move) <= abs(pole_move) * 0.6 + 0.005:
+                out.append({"pattern":"BULL FLAG BREAKOUT","signal":"BUY","trigger_level":resistance,
+                            "quality":84.0,"detail":"Daily bullish pole and compact flag; 15-minute close above resistance required."})
+            if pole_move <= -0.025 and abs(cons_move) <= abs(pole_move) * 0.6 + 0.005:
+                out.append({"pattern":"BEAR FLAG BREAKDOWN","signal":"SELL","trigger_level":support,
+                            "quality":84.0,"detail":"Daily bearish pole and compact flag; 15-minute close below support required."})
+
+        if i >= 40:
+            start, mid = i - 36, i - 18
+            left, center, right = cls._close(rows, start), cls._close(rows, mid), cls._close(rows, i)
+            if cls._near(left, right, 0.05):
+                amplitude = max(abs(left - center), abs(right - center)) / max(abs(left), 1e-9)
+                if amplitude >= 0.02:
+                    left_mid, mid_right = cls._close(rows, mid - 8), cls._close(rows, mid + 8)
+                    if center < left_mid and center < mid_right:
+                        trigger = max(cls._high(rows, j) for j in range(start, mid + 1))
+                        if right <= trigger:
+                            out.append({"pattern":"ROUNDING BOTTOM BREAKOUT","signal":"BUY","trigger_level":trigger,
+                                        "quality":78.0,"detail":"Daily rounding bottom; 15-minute close above resistance required."})
+                    if center > left_mid and center > mid_right:
+                        trigger = min(cls._low(rows, j) for j in range(start, mid + 1))
+                        if right >= trigger:
+                            out.append({"pattern":"ROUNDING TOP BREAKDOWN","signal":"SELL","trigger_level":trigger,
+                                        "quality":78.0,"detail":"Daily rounding top; 15-minute close below support required."})
+
+        out.sort(key=lambda x: float(x.get("quality") or 0), reverse=True)
+        return out
+
     @classmethod
     def detect(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
