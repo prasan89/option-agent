@@ -198,8 +198,16 @@ class GrowwFeedService:
                 {"exchange": str(row["exchange"]), "segment": str(row["segment"]), "exchange_token": str(row["exchange_token"])}
                 for row in instruments
             ]
+            ltp_subscribed = False
             self._stage("SUBSCRIBE_LTP")
-            feed.subscribe_ltp(sdk_instruments, on_data_received=lambda meta: self._publish("ltp", meta, feed.get_ltp()))
+            try:
+                feed.subscribe_ltp(sdk_instruments, on_data_received=lambda meta: self._publish("ltp", meta, feed.get_ltp()))
+                ltp_subscribed = True
+            except Exception as exc:
+                with self._lock:
+                    self._errors += 1
+                    self._startup_error = exc
+                logger.exception("Groww LTP subscription failed; keeping REST LTP fallback alive")
 
             self._stage("SUBSCRIBE_MARKET_DEPTH")
             try:
@@ -210,18 +218,34 @@ class GrowwFeedService:
             except Exception:
                 with self._lock:
                     self._errors += 1
-                logger.exception("Groww market-depth subscription failed; LTP remains active")
+                logger.exception("Groww market-depth subscription failed; LTP/fallback remains active")
 
             with self._lock:
                 self._running = True
                 self._initializing = False
-                self._startup_error = None
-                self._startup_stage = "READY"
+                self._startup_stage = "READY" if ltp_subscribed else "REST_FALLBACK"
             self._ready.set()
-            logger.info("Groww feed READY for %d instruments", len(instruments))
-            self._stage("CONSUME")
-            feed.consume()
-            logger.info("Groww feed consume() returned")
+            logger.info(
+                "Groww feed READY for %d instruments via %s",
+                len(instruments), "WEBSOCKET+REST_FALLBACK" if ltp_subscribed else "REST_LTP_FALLBACK"
+            )
+
+            if ltp_subscribed:
+                try:
+                    self._stage("CONSUME")
+                    feed.consume()
+                    logger.warning("Groww feed consume() returned; REST fallback remains available")
+                except Exception as exc:
+                    with self._lock:
+                        self._errors += 1
+                        self._startup_error = exc
+                        self._startup_stage = "REST_FALLBACK"
+                    logger.exception("Groww websocket consume failed; continuing with REST LTP fallback")
+                    while self._running:
+                        time.sleep(self.FALLBACK_INTERVAL_SECONDS)
+            else:
+                while self._running:
+                    time.sleep(self.FALLBACK_INTERVAL_SECONDS)
         except Exception as exc:
             with self._lock:
                 self._startup_error = exc
