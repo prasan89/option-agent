@@ -78,6 +78,9 @@ class PriceActionPaperTracker:
         generated = self._dt(item.get("created_at") or item.get("time")) or datetime.now(timezone.utc)
         symbol = str(item.get("underlying") or item.get("symbol") or "").upper()
         pattern = str(item.get("pattern") or "")
+        supported = {"BULLISH ENGULFING","BEARISH ENGULFING","BULLISH HARAMI","BEARISH HARAMI","PIERCING","DARK CLOUD COVER","MORNING STAR","EVENING STAR","THREE WHITE SOLDIERS","THREE BLACK CROWS"}
+        if pattern not in supported:
+            return
         direction = str(item.get("signal") or "").upper()
         entry = self._num(item.get("price") or item.get("close_15min"))
         if not symbol or not pattern or direction not in {"BUY", "SELL"} or entry <= 0:
