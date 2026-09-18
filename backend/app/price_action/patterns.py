@@ -99,19 +99,10 @@ class PriceActionPatternDetector:
         # Triangle: falling/flat highs and rising/flat lows. Wedge: both
         # boundaries slope in the same direction while converging.
         triangle = hs < -0.02 and ls > 0.02
-        falling_wedge = hs < -0.005 and ls < -0.02 and hs > ls
-        if close > upper and previous <= upper and (triangle or falling_wedge):
-            if falling_wedge:
-                name = "FALLING WEDGE BREAKOUT"
-            else:
-                name = "TRIANGLE BREAKOUT"
-            return [{"pattern": name, "signal": "BUY", "trigger_level": upper, "quality": 82.0, "detail": "Converging pivot highs/lows resolved upward on a 5-minute close."}]
-        if close < lower and previous >= lower and (triangle or falling_wedge):
-            if falling_wedge:
-                name = "FALLING WEDGE BREAKDOWN"
-            else:
-                name = "TRIANGLE BREAKDOWN"
-            return [{"pattern": name, "signal": "SELL", "trigger_level": lower, "quality": 82.0, "detail": "Converging pivot highs/lows resolved downward on a 5-minute close."}]
+        if close > upper and previous <= upper and triangle:
+            return [{"pattern": "TRIANGLE BREAKOUT", "signal": "BUY", "trigger_level": upper, "quality": 82.0, "detail": "Converging pivot highs/lows resolved upward on a 5-minute close."}]
+        if close < lower and previous >= lower and triangle:
+            return [{"pattern": "TRIANGLE BREAKDOWN", "signal": "SELL", "trigger_level": lower, "quality": 82.0, "detail": "Converging pivot highs/lows resolved downward on a 5-minute close."}]
         return []
 
     @classmethod
