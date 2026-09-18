@@ -55,19 +55,6 @@ class PriceActionPatternDetector:
         return abs(a - b) / max(abs(b), 1e-9) <= tolerance
 
     @classmethod
-    def _range_break(cls, rows: list[dict[str, Any]], i: int, lookback: int = 20) -> list[dict[str, Any]]:
-        if i < lookback + 1:
-            return []
-        support, resistance = cls._range(rows, i - lookback, i)
-        close = cls._close(rows, i)
-        previous = cls._close(rows, i - 1)
-        if close > resistance and previous <= resistance:
-            return [{"pattern": "5M RANGE BREAKOUT", "signal": "BUY", "trigger_level": resistance, "quality": 92.0, "detail": f"5-minute close broke the prior {lookback}-bar high."}]
-        if close < support and previous >= support:
-            return [{"pattern": "5M RANGE BREAKDOWN", "signal": "SELL", "trigger_level": support, "quality": 92.0, "detail": f"5-minute close broke the prior {lookback}-bar low."}]
-        return []
-
-    @classmethod
     def _head_shoulders(cls, rows: list[dict[str, Any]], i: int, inverse: bool = False) -> list[dict[str, Any]]:
         if i < 45:
             return []
@@ -112,20 +99,15 @@ class PriceActionPatternDetector:
         # Triangle: falling/flat highs and rising/flat lows. Wedge: both
         # boundaries slope in the same direction while converging.
         triangle = hs < -0.02 and ls > 0.02
-        rising_wedge = hs > 0.02 and ls > 0.005 and hs < ls
         falling_wedge = hs < -0.005 and ls < -0.02 and hs > ls
-        if close > upper and previous <= upper and (triangle or rising_wedge or falling_wedge):
-            if rising_wedge:
-                name = "RISING WEDGE BREAKOUT"
-            elif falling_wedge:
+        if close > upper and previous <= upper and (triangle or falling_wedge):
+            if falling_wedge:
                 name = "FALLING WEDGE BREAKOUT"
             else:
                 name = "TRIANGLE BREAKOUT"
             return [{"pattern": name, "signal": "BUY", "trigger_level": upper, "quality": 82.0, "detail": "Converging pivot highs/lows resolved upward on a 5-minute close."}]
-        if close < lower and previous >= lower and (triangle or rising_wedge or falling_wedge):
-            if rising_wedge:
-                name = "RISING WEDGE BREAKDOWN"
-            elif falling_wedge:
+        if close < lower and previous >= lower and (triangle or falling_wedge):
+            if falling_wedge:
                 name = "FALLING WEDGE BREAKDOWN"
             else:
                 name = "TRIANGLE BREAKDOWN"
@@ -181,7 +163,6 @@ class PriceActionPatternDetector:
     @classmethod
     def detect(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
-        candidates.extend(cls._range_break(rows, i))
         candidates.extend(cls._head_shoulders(rows, i, inverse=False))
         candidates.extend(cls._head_shoulders(rows, i, inverse=True))
         candidates.extend(cls._converging_pattern(rows, i))
@@ -196,10 +177,4 @@ class PriceActionPatternDetector:
         if i < 40:
             return []
         candidates: list[dict[str, Any]] = []
-        support, resistance = cls._range(rows, max(0, i - 20), i)
-        close = cls._close(rows, i)
-        if close >= resistance * 0.997:
-            candidates.append({"pattern": "5M BREAKOUT SETUP", "signal": "BUY", "trigger_level": resistance, "quality": 70.0, "detail": "Latest 5-minute close is within 0.3% of the 20-bar breakout trigger."})
-        if close <= support * 1.003:
-            candidates.append({"pattern": "5M BREAKDOWN SETUP", "signal": "SELL", "trigger_level": support, "quality": 70.0, "detail": "Latest 5-minute close is within 0.3% of the 20-bar breakdown trigger."})
         return candidates
