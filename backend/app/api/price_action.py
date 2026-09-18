@@ -12,6 +12,7 @@ from app.signals.store import signal_store
 
 router = APIRouter(tags=["price-action"])
 IST = ZoneInfo("Asia/Kolkata")
+EXCLUDED_PATTERNS = {"5M RANGE BREAKOUT", "5M RANGE BREAKDOWN", "RISING WEDGE BREAKOUT", "RISING WEDGE BREAKDOWN"}
 
 
 def _results() -> list[dict[str, Any]]:
@@ -27,6 +28,8 @@ def _results() -> list[dict[str, Any]]:
         seen: set[str] = set()
         output: list[dict[str, Any]] = []
         for row in combined:
+            if str(row.get("pattern") or "") in EXCLUDED_PATTERNS:
+                continue
             key = f"{row.get('underlying')}:{row.get('signal')}:{row.get('pattern')}:{row.get('time') or row.get('created_at')}"
             if key not in seen:
                 seen.add(key)
