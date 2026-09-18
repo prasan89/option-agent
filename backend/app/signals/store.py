@@ -240,6 +240,31 @@ class SignalStore:
             result.append(item)
         return result
 
+    def price_action_history(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Return persisted price-action setups and confirmations only."""
+        limit = max(1, min(limit, 5000))
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, signal_key, created_at, symbol, underlying, ltp,
+                       direction, bias, score, confidence, event, evidence, payload
+                FROM signals
+                WHERE instrument_type='PRICE_ACTION'
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """, (limit,)
+            ).fetchall()
+            columns = [d.name for d in conn.execute(
+                "SELECT id, signal_key, created_at, symbol, underlying, ltp, direction, bias, score, confidence, event, evidence, payload FROM signals LIMIT 0"
+            ).description]
+        result=[]
+        for row in rows:
+            item=dict(zip(columns,row))
+            if isinstance(item.get("created_at"),datetime):
+                item["created_at"]=item["created_at"].isoformat()
+            result.append(item)
+        return result
+
     def reversal_history(self, limit: int = 500) -> list[dict[str, Any]]:
         """Return every persisted JFT reversal event, newest first."""
         limit = max(1, min(limit, 5000))
