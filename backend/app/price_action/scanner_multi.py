@@ -125,6 +125,7 @@ class PriceActionScanner:
         target=price+2*risk if direction=="BUY" else price-2*risk
         daily_date=cls._dt(str(daily[-1]["ts"])).date().isoformat() if daily else None
         return {"underlying":underlying,"symbol":underlying,"signal":direction,"pattern":candidate["pattern"],
+                "pattern_family":"CANDLESTICK_REVERSAL" if candidate["pattern"] in {"BULLISH ENGULFING","BEARISH ENGULFING","BULLISH HARAMI","BEARISH HARAMI","PIERCING","DARK CLOUD COVER","MORNING STAR","EVENING STAR","THREE WHITE SOLDIERS","THREE BLACK CROWS"} else "STRUCTURAL_PRICE_ACTION",
                 "score":m["score"],"status":"CONFIRMED","pattern_quality":float(candidate.get("quality") or 0),
                 "daily_trigger_level":round(trigger,4),"trigger_level":round(trigger,4),
                 "buy_above":round(trigger,4) if direction=="BUY" else None,
