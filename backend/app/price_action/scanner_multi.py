@@ -258,6 +258,7 @@ class PriceActionScanner:
             except Exception as exc:
                 errors+=1; self._errors+=1; self._last_error=f"{underlying}: 15m scan: {exc}"
                 logger.exception("Daily/15m scan failed for %s",underlying)
+        self._persist_setups(cache)
         with self._lock:
             self._cache=cache
             self._cache_date=today.isoformat() if errors==0 else None
@@ -268,6 +269,45 @@ class PriceActionScanner:
             "Daily pattern + 15m breakout cache: setups=%s daily_requests=%s 15m_requests=%s errors=%s",
             len(cache),self._daily_requests,self._intraday_requests,errors
         )
+
+    def _persist_setups(self, cache):
+        """Persist daily setups separately from confirmed 15M signals."""
+        records=[]
+        for underlying,result in cache.items():
+            setup=result.get("setup") or {}
+            daily=result.get("daily") or self._daily_setups.get(underlying,{}).get("daily") or []
+            if not setup:
+                continue
+            setup_ts=str(daily[-1].get("ts")) if daily else datetime.now(IST).isoformat()
+            records.append({
+                "signal_key":f"PRICE_ACTION_SETUP:{underlying}:{setup.get('pattern')}:{setup_ts}:{setup.get('trigger_level')}",
+                "created_at":self._dt(setup_ts) or datetime.now(IST),
+                "symbol":underlying,"underlying":underlying,"instrument_type":"PRICE_ACTION",
+                "ltp":float(daily[-1].get("close")) if daily else None,
+                "direction":setup.get("signal","UNKNOWN"),
+                "bias":"BULLISH" if setup.get("signal")=="BUY" else "BEARISH",
+                "score":float(setup.get("quality") or 0),
+                "confidence":"SETUP","event":"PRICE_ACTION_SETUP",
+                "evidence":[setup.get("pattern",""),setup.get("detail","")],
+                "payload":{
+                    "underlying":underlying,"symbol":underlying,"signal":setup.get("signal"),
+                    "pattern":setup.get("pattern"),"pattern_family":"STRUCTURAL_PRICE_ACTION",
+                    "score":float(setup.get("quality") or 0),"status":"SETUP",
+                    "daily_trigger_level":float(setup.get("trigger_level") or 0),
+                    "trigger_level":float(setup.get("trigger_level") or 0),
+                    "daily_close":float(daily[-1].get("close")) if daily else None,
+                    "daily_setup_date":setup_ts,
+                    "time":setup_ts,
+                    "created_at":(self._dt(setup_ts) or datetime.now(IST)).isoformat(),
+                    "reason":setup.get("detail","Daily setup awaiting 15-minute confirmation."),
+                    "research_only":True,"trading":"DISABLED",
+                },
+            })
+        if records:
+            try:
+                signal_store.insert_many(records)
+            except Exception as exc:
+                logger.warning("Price-action setup persistence failed: %s",exc)
 
     def _emit(self, signal):
         now=datetime.now(IST)
