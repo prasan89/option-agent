@@ -148,19 +148,9 @@ class PaperSignalTracker:
                     bars_held = int(old_bars or 0)
                     mfe_pct = float(old_mfe or 0)
                     mae_pct = float(old_mae or 0)
-                    if status not in {"TARGET_HIT", "STOP_HIT"}:
-                        if target and current >= target:
-                            status, reason = "TARGET_HIT", "Observed premium reached/exceeded the planned target."
-                            exit_at, exit_price = now, target
-                        elif stop and current <= stop:
-                            status, reason = "STOP_HIT", "Observed premium reached/fell below the planned stop."
-                            exit_at, exit_price = now, stop
-                        elif pnl > 0:
-                            status = "PROFIT"
-                        elif pnl < 0:
-                            status = "LOSS"
-                        else:
-                            status = "OPEN"
+                    if status not in {"TARGET_HIT", "STOP_HIT", "PROFIT", "LOSS", "FLAT"}:
+                        status = "OPEN"
+                        reason = None
                     conn.execute(
                         """UPDATE paper_signal_tracker
                            SET last_observed_at=%s,current_price=%s,mark_pnl=%s,pnl_pct=%s,status=%s,
