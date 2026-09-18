@@ -155,7 +155,7 @@ class PriceActionScanner:
         completed=rows
         if len(completed)<self.MIN_DAILY_BARS:return None
         candidates=PriceActionPatternDetector.daily_setup_candidates(completed,len(completed)-1)
-        return candidates[0] if candidates else None
+        return max(candidates,key=lambda x:float(x.get("quality") or 0)) if candidates else None
 
     def _build_daily_cache(self, today):
         # During a live session the current daily candle is incomplete, so use
