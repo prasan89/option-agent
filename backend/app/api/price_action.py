@@ -12,14 +12,14 @@ from app.signals.store import signal_store
 
 router = APIRouter(tags=["price-action"])
 IST = ZoneInfo("Asia/Kolkata")
-EXCLUDED_PATTERNS = {"5M RANGE BREAKOUT", "5M RANGE BREAKDOWN", "RISING BREAKOUT", "RISING BREAKDOWN"}
+EXCLUDED_PATTERNS = set()
 
 
 def _results() -> list[dict[str, Any]]:
     live = price_action_scanner.stats.get("signals", [])
     try:
         persisted = []
-        for item in signal_store.recent(200):
+        for item in signal_store.price_action_history(500):
             if item.get("instrument_type") == "PRICE_ACTION":
                 payload = item.get("payload") or {}
                 if isinstance(payload, dict):
