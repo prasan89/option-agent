@@ -20,6 +20,7 @@ from app.api.paper_tracker import router as paper_tracker_router
 from app.api.pipeline import router as pipeline_router
 from app.api.price_action import router as price_action_router
 from app.api.price_action_history import router as price_action_history_router
+from app.api.price_action_paper import router as price_action_paper_router
 from app.api.reversal import router as reversal_router
 from app.api.scanner import router as scanner_router
 from app.api.signals import router as signals_router
@@ -35,6 +36,7 @@ from app.pipeline import research_pipeline
 from app.price_action.scanner import price_action_scanner
 from app.signals.monitor import signal_monitor
 from app.signals.paper_tracker import paper_signal_tracker
+from app.signals.price_action_paper_tracker import price_action_paper_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +48,7 @@ app.middleware("http")(dashboard_filter_middleware)
 async def reversal_navigation(request: Request, call_next):
     """Add dedicated research tabs to the existing dashboard navigation."""
     response = await call_next(request)
-    if request.url.path not in {"/dashboard", "/strategy", "/dashboard/history", "/price-action", "/price-action/history", "/jft", "/reversal", "/reversal/history", "/paper-tracker"}:
+    if request.url.path not in {"/dashboard", "/strategy", "/dashboard/history", "/price-action", "/price-action/history", "/jft", "/reversal", "/reversal/history", "/paper-tracker", "/price-action/paper-pnl"}:
         return response
     content_type = str(response.headers.get("content-type", ""))
     if "text/html" not in content_type or not hasattr(response, "body_iterator"):
@@ -86,6 +88,7 @@ app.include_router(dashboard_router)
 app.include_router(strategy_dashboard_router)
 app.include_router(price_action_router)
 app.include_router(price_action_history_router)
+app.include_router(price_action_paper_router)
 app.include_router(slo_history_router)
 app.include_router(jft_router)
 app.include_router(reversal_router)
@@ -100,6 +103,7 @@ def startup() -> None:
     run_migrations()
     try:
         paper_signal_tracker.init()
+        price_action_paper_tracker.init()
     except Exception:
         logger.exception("Paper signal tracker initialization failed")
     research_pipeline.startup()
