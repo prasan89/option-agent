@@ -311,8 +311,8 @@ class PaperSignalTracker:
                        COALESCE(SUM(mark_pnl),0)
                 FROM paper_signal_tracker
             """).fetchone()
-        closed = target + stop
-        wins = target
+        closed = profit + loss + target + stop
+        wins = profit + target
         return {
             "signals": total,
             "profit": profit,
