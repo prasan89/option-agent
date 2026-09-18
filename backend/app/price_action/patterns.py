@@ -244,6 +244,71 @@ class PriceActionPatternDetector:
                  "quality": 84.0, "detail": "Daily U-shaped cup with handle; 15-minute close above resistance required."}]
 
     @classmethod
+    def _candlestick_reversal(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
+        """Detect daily multi-candle reversal patterns; 15M confirmation happens in the scanner."""
+        if i < 4:
+            return []
+        def o(j): return cls._num(rows[j].get("open"))
+        def h(j): return cls._num(rows[j].get("high"))
+        def l(j): return cls._num(rows[j].get("low"))
+        def c(j): return cls._num(rows[j].get("close"))
+        def body(j): return abs(c(j) - o(j))
+        def rng(j): return max(h(j) - l(j), 1e-9)
+        def bull(j): return c(j) > o(j)
+        def bear(j): return c(j) < o(j)
+        out = []
+        b1, b2, b3 = body(i-1), body(i-2), body(i-3)
+
+        # Engulfing
+        if bear(i-1) and bull(i) and o(i) <= c(i-1) and c(i) >= o(i-1) and body(i) >= b1 * 1.05:
+            out.append({"pattern":"BULLISH ENGULFING","signal":"BUY","trigger_level":h(i),
+                        "quality":90.0,"detail":"Daily bullish engulfing; 15-minute close above pattern high required."})
+        if bull(i-1) and bear(i) and o(i) >= c(i-1) and c(i) <= o(i-1) and body(i) >= b1 * 1.05:
+            out.append({"pattern":"BEARISH ENGULFING","signal":"SELL","trigger_level":l(i),
+                        "quality":90.0,"detail":"Daily bearish engulfing; 15-minute close below pattern low required."})
+
+        # Harami: second real body contained inside first.
+        if bear(i-1) and bull(i) and max(o(i),c(i)) <= o(i-1) and min(o(i),c(i)) >= c(i-1) and body(i) <= b1 * 0.65:
+            out.append({"pattern":"BULLISH HARAMI","signal":"BUY","trigger_level":h(i),
+                        "quality":86.0,"detail":"Daily bullish harami; 15-minute close above pattern high required."})
+        if bull(i-1) and bear(i) and max(o(i),c(i)) <= c(i-1) and min(o(i),c(i)) >= o(i-1) and body(i) <= b1 * 0.65:
+            out.append({"pattern":"BEARISH HARAMI","signal":"SELL","trigger_level":l(i),
+                        "quality":86.0,"detail":"Daily bearish harami; 15-minute close below pattern low required."})
+
+        # Piercing / dark cloud cover.
+        midpoint_prev = (o(i-1) + c(i-1)) / 2.0
+        if bear(i-1) and bull(i) and o(i) < c(i-1) and c(i) > midpoint_prev and c(i) < o(i-1):
+            out.append({"pattern":"PIERCING","signal":"BUY","trigger_level":h(i),
+                        "quality":84.0,"detail":"Daily piercing pattern; 15-minute close above pattern high required."})
+        if bull(i-1) and bear(i) and o(i) > c(i-1) and c(i) < midpoint_prev and c(i) > o(i-1):
+            out.append({"pattern":"DARK CLOUD COVER","signal":"SELL","trigger_level":l(i),
+                        "quality":84.0,"detail":"Daily dark cloud cover; 15-minute close below pattern low required."})
+
+        # Three-candle reversal patterns.
+        if bear(i-2) and body(i-2) > b3 * 0.9 and body(i-1) <= b3 * 0.45 and bull(i) and c(i) > (o(i-2) + c(i-2))/2:
+            out.append({"pattern":"MORNING STAR","signal":"BUY","trigger_level":h(i),
+                        "quality":88.0,"detail":"Daily morning star; 15-minute close above pattern high required."})
+        if bull(i-2) and body(i-2) > b3 * 0.9 and body(i-1) <= b3 * 0.45 and bear(i) and c(i) < (o(i-2) + c(i-2))/2:
+            out.append({"pattern":"EVENING STAR","signal":"SELL","trigger_level":l(i),
+                        "quality":88.0,"detail":"Daily evening star; 15-minute close below pattern low required."})
+
+        if bull(i-2) and bull(i-1) and bull(i) and c(i) > c(i-1) > c(i-2) and o(i-1) > o(i-2) and o(i) > o(i-1):
+            out.append({"pattern":"THREE WHITE SOLDIERS","signal":"BUY","trigger_level":h(i),
+                        "quality":87.0,"detail":"Daily three white soldiers; 15-minute close above pattern high required."})
+        if bear(i-2) and bear(i-1) and bear(i) and c(i) < c(i-1) < c(i-2) and o(i-1) < o(i-2) and o(i) < o(i-1):
+            out.append({"pattern":"THREE BLACK CROWS","signal":"SELL","trigger_level":l(i),
+                        "quality":87.0,"detail":"Daily three black crows; 15-minute close below pattern low required."})
+
+        return out
+
+    @staticmethod
+    def _num(value: Any) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
     def daily_setup_candidates(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
         """Build daily-chart pattern setups; the returned level is NOT a daily breakout.
         A separate 15-minute close must cross it before a signal is emitted."""
@@ -252,6 +317,7 @@ class PriceActionPatternDetector:
         out: list[dict[str, Any]] = []
         start = max(0, i - 100)
 
+        out.extend(cls._candlestick_reversal(rows, i))
         out.extend(cls._classic_bottom_top(rows, i, triple=False, bottom=True))
         out.extend(cls._classic_bottom_top(rows, i, triple=False, bottom=False))
         out.extend(cls._classic_bottom_top(rows, i, triple=True, bottom=True))
