@@ -39,6 +39,7 @@ def run_migrations() -> None:
             )
         """)
         signal_columns = {
+            "signal_key": "TEXT",
             "underlying": "TEXT",
             "instrument_type": "TEXT",
             "expiry_date": "TEXT",
@@ -52,6 +53,15 @@ def run_migrations() -> None:
         }
         for name, definition in signal_columns.items():
             conn.execute(f"ALTER TABLE signals ADD COLUMN IF NOT EXISTS {name} {definition}")
+        # Repair legacy databases created before signal_key was introduced.
+        # Existing rows receive deterministic keys so newer history/persistence
+        # queries work without destructive table recreation.
+        conn.execute(
+            "UPDATE signals SET signal_key = 'LEGACY:' || id::text "
+            "WHERE signal_key IS NULL OR btrim(signal_key) = ''"
+        )
+        conn.execute("ALTER TABLE signals ALTER COLUMN signal_key SET NOT NULL")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_signal_key_unique ON signals(signal_key)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at DESC)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_underlying ON signals(underlying)")
 
