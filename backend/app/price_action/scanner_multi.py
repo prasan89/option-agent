@@ -216,6 +216,10 @@ class PriceActionScanner:
         if self._cache_date!=today.isoformat() or self._market_open(): self._build_cache()
         for cached in list(self._cache.values()):
             if cached.get("confirmed"): self._emit(cached["confirmed"])
+        try:
+            price_action_paper_tracker.evaluate_open()
+        except Exception as exc:
+            logger.warning("Price-action paper tracker evaluation failed: %s", exc)
         with self._lock:self._checks+=1;self._last_scan=datetime.now(IST).isoformat()
 
     def _run(self):
