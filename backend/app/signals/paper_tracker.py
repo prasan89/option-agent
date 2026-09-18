@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from app.core.config import settings
 
@@ -130,7 +131,7 @@ class PaperSignalTracker:
                            SET last_observed_at=%s,current_price=%s,mark_pnl=%s,pnl_pct=%s,status=%s,
                                outcome_reason=COALESCE(%s,outcome_reason),metadata=%s
                            WHERE signal_key=%s""",
-                        (now, current, pnl, pnl_pct, status, reason, psycopg.types.json.Jsonb(item), key),
+                        (now, current, pnl, pnl_pct, status, reason, Jsonb(item), key),
                     )
                     written += 1
                     continue
