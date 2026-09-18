@@ -32,6 +32,7 @@ class GrowwFeedService:
         self._thread: threading.Thread | None = None
         self._fallback_thread: threading.Thread | None = None
         self._running = False
+        self._fallback_running = False
         self._initializing = False
         self._ready = threading.Event()
         self._startup_error: Exception | None = None
@@ -47,7 +48,9 @@ class GrowwFeedService:
 
     @property
     def running(self) -> bool:
-        return self._running and self._thread is not None and self._thread.is_alive()
+        websocket_alive = self._running and self._thread is not None and self._thread.is_alive()
+        fallback_alive = self._fallback_running and self._fallback_thread is not None and self._fallback_thread.is_alive()
+        return websocket_alive or fallback_alive
 
     @property
     def starting(self) -> bool:
@@ -124,7 +127,7 @@ class GrowwFeedService:
             logger.exception("Failed to publish Groww event")
 
     def _poll_rest_ltp(self) -> None:
-        while self.running:
+        while self._fallback_running:
             try:
                 if not self._market_open():
                     time.sleep(self.FALLBACK_INTERVAL_SECONDS)
@@ -185,6 +188,7 @@ class GrowwFeedService:
             # an SDK or websocket failure cannot take down market-data polling.
             with self._lock:
                 self._running = True
+                self._fallback_running = True
                 self._initializing = True
                 self._startup_error = None
             if self._fallback_thread is None or not self._fallback_thread.is_alive():
@@ -255,8 +259,11 @@ class GrowwFeedService:
             with self._lock:
                 self._startup_error = exc
                 self._errors += 1
+                # A websocket/client failure must not kill the REST LTP
+                # fallback. Keep the fallback alive if it was already started.
                 self._running = False
                 self._initializing = False
+                self._startup_stage = "REST_FALLBACK" if self._fallback_running else self._startup_stage
             self._ready.set()
             logger.exception("Groww feed stopped during stage %s", self._startup_stage)
         finally:
@@ -273,6 +280,7 @@ class GrowwFeedService:
             raise RuntimeError("Groww credentials are not configured")
         self._ready.clear()
         self._startup_error = None
+        self._fallback_running = False
         self._startup_stage = "STARTING"
         self._instruments = instruments
         self._initializing = True
@@ -288,6 +296,7 @@ class GrowwFeedService:
     def stop(self) -> None:
         with self._lock:
             self._running = False
+            self._fallback_running = False
             self._initializing = False
         # GrowwFeed.consume is SDK-blocking and has no reliable blocking-stop primitive in the current SDK wrapper.
 
