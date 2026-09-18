@@ -17,13 +17,14 @@ IST = ZoneInfo("Asia/Kolkata")
 
 
 class PriceActionScanner:
-    """Historical-only 5-minute scanner with multiple structural patterns."""
+    """Daily-chart structural setup + 15-minute breakout confirmation scanner."""
 
     MIN_SCORE = 65.0
-    HISTORY_DAYS = 30
+    DAILY_HISTORY_DAYS = 220
+    INTRADAY_HISTORY_DAYS = 30
     MAX_UNDERLYINGS = 50
-    LOOKBACK_BARS = 20
-    MIN_BARS = 80
+    MIN_DAILY_BARS = 60
+    MIN_15M_BARS = 10
     CYCLE_SECONDS = 300
     MARKET_OPEN = (9, 15)
     MARKET_CLOSE = (15, 40)
@@ -35,329 +36,194 @@ class PriceActionScanner:
     )
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread: threading.Thread | None = None
-        self._cache: dict[str, dict[str, Any]] = {}
-        self._cache_date: str | None = None
-        self._signals: list[dict[str, Any]] = []
-        self._alerted: set[tuple[str, str, str, str]] = set()
-        self._checks = 0
-        self._daily_requests = 0
-        self._intraday_requests = 0
-        self._errors = 0
-        self._last_error: str | None = None
-        self._last_scan: str | None = None
-        self._last_signal: str | None = None
-        self._setups = 0
-        self._triggered = 0
-        self._pattern_counts: Counter[str] = Counter()
+        self._lock=threading.Lock(); self._running=False; self._thread=None
+        self._cache={}; self._cache_date=None; self._signals=[]
+        self._alerted=set(); self._checks=0; self._daily_requests=0
+        self._intraday_requests=0; self._errors=0; self._last_error=None
+        self._last_scan=None; self._last_signal=None; self._setups=0
+        self._triggered=0; self._pattern_counts=Counter()
 
     @property
-    def running(self) -> bool:
-        return self._running and self._thread is not None and self._thread.is_alive()
+    def running(self): return self._running and self._thread is not None and self._thread.is_alive()
 
     @property
-    def stats(self) -> dict[str, Any]:
+    def stats(self):
         with self._lock:
-            return {
-                "running": self.running,
-                "mode": "HISTORICAL_5MIN_MULTI_PATTERN",
-                "minimum_score": self.MIN_SCORE,
-                "cached_underlyings": len(self._cache),
-                "cache_date": self._cache_date,
-                "checks": self._checks,
-                "daily_requests": self._daily_requests,
-                "intraday_requests": self._intraday_requests,
-                "setups": self._setups,
-                "triggered": self._triggered,
-                "errors": self._errors,
-                "last_error": self._last_error,
-                "last_scan": self._last_scan,
-                "last_signal": self._last_signal,
-                "pattern_counts": dict(self._pattern_counts),
-                "supported_patterns": list(self.PATTERN_NAMES),
-                "signals": list(self._signals[:50]),
-            }
+            return {"running":self.running,"mode":"DAILY_PATTERN_15MIN_BREAKOUT","minimum_score":self.MIN_SCORE,
+                    "cached_underlyings":len(self._cache),"cache_date":self._cache_date,"checks":self._checks,
+                    "daily_requests":self._daily_requests,"intraday_requests":self._intraday_requests,
+                    "setups":self._setups,"triggered":self._triggered,"errors":self._errors,
+                    "last_error":self._last_error,"last_scan":self._last_scan,"last_signal":self._last_signal,
+                    "pattern_counts":dict(self._pattern_counts),"supported_patterns":list(self.PATTERN_NAMES),
+                    "signals":list(self._signals[:50])}
 
     @staticmethod
-    def _market_open() -> bool:
-        now = datetime.now(IST)
-        return now.weekday() < 5 and PriceActionScanner.MARKET_OPEN <= (now.hour, now.minute) <= PriceActionScanner.MARKET_CLOSE
+    def _market_open():
+        now=datetime.now(IST)
+        return now.weekday()<5 and PriceActionScanner.MARKET_OPEN <= (now.hour,now.minute) <= PriceActionScanner.MARKET_CLOSE
 
     @staticmethod
-    def _parse_candles(payload: Any) -> list[dict[str, float | str]]:
-        candles = payload.get("candles") if isinstance(payload, dict) else None
-        if not isinstance(candles, list):
-            return []
-        out: list[dict[str, float | str]] = []
-        for candle in candles:
-            if not isinstance(candle, (list, tuple)) or len(candle) < 6:
-                continue
-            try:
-                out.append({
-                    "ts": str(candle[0]), "open": float(candle[1]), "high": float(candle[2]),
-                    "low": float(candle[3]), "close": float(candle[4]), "volume": float(candle[5]),
-                })
-            except (TypeError, ValueError):
-                continue
-        out.sort(key=lambda row: str(row["ts"]))
-        return out
+    def _parse(payload):
+        candles=payload.get("candles") if isinstance(payload,dict) else None
+        if not isinstance(candles,list): return []
+        out=[]
+        for c in candles:
+            if not isinstance(c,(list,tuple)) or len(c)<6: continue
+            try: out.append({"ts":str(c[0]),"open":float(c[1]),"high":float(c[2]),"low":float(c[3]),"close":float(c[4]),"volume":float(c[5])})
+            except (TypeError,ValueError): pass
+        out.sort(key=lambda x:str(x["ts"])); return out
 
     @staticmethod
-    def _candle_datetime(ts: str) -> datetime | None:
-        value = str(ts or "").strip()
+    def _dt(ts):
         try:
-            if value.isdigit():
-                epoch = float(value)
-                if epoch > 10_000_000_000:
-                    epoch /= 1000.0
-                return datetime.fromtimestamp(epoch, tz=IST)
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=IST)
-            return parsed.astimezone(IST)
-        except (TypeError, ValueError, OverflowError, OSError):
-            return None
-
-    @classmethod
-    def _candle_date(cls, ts: str) -> str | None:
-        parsed = cls._candle_datetime(ts)
-        return parsed.date().isoformat() if parsed else None
+            v=str(ts).strip()
+            if v.isdigit():
+                e=float(v); e=e/1000 if e>10_000_000_000 else e
+                return datetime.fromtimestamp(e,tz=IST)
+            d=datetime.fromisoformat(v.replace("Z","+00:00"))
+            return (d.replace(tzinfo=IST) if d.tzinfo is None else d).astimezone(IST)
+        except (TypeError,ValueError,OverflowError,OSError): return None
 
     @staticmethod
-    def _ema(values: list[float], period: int) -> float:
-        if not values:
-            return 0.0
-        alpha = 2.0 / (period + 1.0)
-        value = values[0]
-        for item in values[1:]:
-            value = item * alpha + value * (1.0 - alpha)
-        return value
+    def _ema(values,period):
+        if not values:return 0.0
+        a=2/(period+1); x=values[0]
+        for v in values[1:]: x=v*a+x*(1-a)
+        return x
 
     @classmethod
-    def _session_vwap(cls, rows: list[dict[str, float | str]], index: int) -> float:
-        current_date = cls._candle_date(str(rows[index]["ts"]))
-        if not current_date:
-            return float(rows[index]["close"])
-        start = index
-        while start > 0 and cls._candle_date(str(rows[start - 1]["ts"])) == current_date:
-            start -= 1
-        pv = volume = 0.0
-        for row in rows[start:index + 1]:
-            typical = (float(row["high"]) + float(row["low"]) + float(row["close"])) / 3.0
-            vol = max(0.0, float(row["volume"]))
-            pv += typical * vol
-            volume += vol
-        return pv / volume if volume else float(rows[index]["close"])
+    def _score_15m(cls, rows, i, direction, trigger, quality):
+        closes=[float(x["close"]) for x in rows[:i+1]]
+        vols=[float(x["volume"]) for x in rows]
+        close=closes[-1]; ema9=cls._ema(closes[-30:],9); ema20=cls._ema(closes[-50:],20)
+        prev=vols[max(0,i-12):i]; avg=sum(prev)/len(prev) if prev else 0
+        vr=vols[i]/avg if avg else 0
+        trend=(close>ema9>ema20) if direction=="BUY" else (close<ema9<ema20)
+        score=55+min(10,quality*.10)+(15 if trend else 0)+(min(15,vr*10) if vr else 0)
+        return {"score":round(min(100,score),2),"ema9_15m":round(ema9,2),"ema20_15m":round(ema20,2),"volume_ratio_15m":round(vr,2)}
 
     @classmethod
-    def _score_bar(cls, rows: list[dict[str, float | str]], index: int, direction: str, trigger_level: float, pattern_quality: float) -> dict[str, Any]:
-        closes = [float(row["close"]) for row in rows[:index + 1]]
-        volumes = [float(row["volume"]) for row in rows]
-        close = closes[-1]
-        ema9 = cls._ema(closes[-30:], 9)
-        ema20 = cls._ema(closes[-50:], 20)
-        ema50 = cls._ema(closes[-80:], 50)
-        vwap = cls._session_vwap(rows, index)
-        previous_volumes = volumes[max(0, index - cls.LOOKBACK_BARS):index]
-        avg_volume = sum(previous_volumes) / len(previous_volumes) if previous_volumes else 0.0
-        volume_ratio = volumes[index] / avg_volume if avg_volume else 0.0
-        trend_ok = ((direction == "BUY" and close > vwap and ema9 > ema20) or (direction == "SELL" and close < vwap and ema9 < ema20))
-        ema50_ok = close > ema50 if direction == "BUY" else close < ema50
-        volume_ok = volume_ratio >= 1.0
-        score = 55.0 + min(10.0, pattern_quality * 0.10)
-        if trend_ok:
-            score += 15.0
-        if ema50_ok:
-            score += 10.0
-        if volume_ok:
-            score += min(15.0, volume_ratio * 10.0)
-        if abs(close - trigger_level) / max(abs(trigger_level), 1e-9) <= 0.0025:
-            score += 5.0
-        return {
-            "score": round(min(100.0, score), 2), "ema9": round(ema9, 2), "ema20": round(ema20, 2),
-            "ema50": round(ema50, 2), "vwap": round(vwap, 2), "volume_ratio": round(volume_ratio, 2),
-        }
+    def _signal(cls, underlying, daily, intraday, i, candidate):
+        dt=cls._dt(str(intraday[i]["ts"]))
+        if not dt:return None
+        direction=candidate["signal"]; trigger=float(candidate["trigger_level"])
+        m=cls._score_15m(intraday,i,direction,trigger,float(candidate.get("quality") or 70))
+        if m["score"]<cls.MIN_SCORE:return None
+        price=float(intraday[i]["close"])
+        window=intraday[max(0,i-3):i+1]
+        stop=min(float(x["low"]) for x in window) if direction=="BUY" else max(float(x["high"]) for x in window)
+        risk=max(abs(price-stop),price*.002)
+        stop=price-risk if direction=="BUY" else price+risk
+        target=price+2*risk if direction=="BUY" else price-2*risk
+        daily_date=cls._dt(str(daily[-1]["ts"])).date().isoformat() if daily else None
+        return {"underlying":underlying,"symbol":underlying,"signal":direction,"pattern":candidate["pattern"],
+                "score":m["score"],"status":"CONFIRMED","pattern_quality":float(candidate.get("quality") or 0),
+                "daily_trigger_level":round(trigger,4),"trigger_level":round(trigger,4),
+                "buy_above":round(trigger,4) if direction=="BUY" else None,
+                "sell_below":round(trigger,4) if direction=="SELL" else None,
+                "trigger_state":"DAILY_PATTERN_15MIN_CONFIRMED","price":price,
+                "close_15min":price,"vol_ratio_15m":m["volume_ratio_15m"],"ema9_15m":m["ema9_15m"],
+                "ema20_15m":m["ema20_15m"],"daily_close":float(daily[-1]["close"]),"daily_setup_date":daily_date,
+                "stop_loss":round(stop,4),"target":round(target,4),"rr":2.0,"time":str(intraday[i]["ts"]),
+                "created_at":dt.isoformat(),"reason":f"{candidate['pattern']}; {candidate.get('detail','daily setup')}; 15-minute close crossed daily trigger; score={m['score']:.2f}.",
+                "data_sources":["GROWW_HISTORICAL_DAILY","GROWW_HISTORICAL_15MIN"],"research_only":True,"trading":"DISABLED"}
 
-    @classmethod
-    def _make_signal(cls, underlying: str, rows: list[dict[str, float | str]], index: int, candidate: dict[str, Any], status: str = "CONFIRMED") -> dict[str, Any] | None:
-        dt = cls._candle_datetime(str(rows[index]["ts"]))
-        if not dt:
-            return None
-        direction = str(candidate["signal"])
-        trigger = float(candidate["trigger_level"])
-        metrics = cls._score_bar(rows, index, direction, trigger, float(candidate.get("quality") or 70.0))
-        if metrics["score"] < cls.MIN_SCORE:
-            return None
-        close = float(rows[index]["close"])
-        window = rows[max(0, index - 3):index + 1]
-        stop = min(float(r["low"]) for r in window) if direction == "BUY" else max(float(r["high"]) for r in window)
-        risk = abs(close - stop)
-        if risk <= 0:
-            risk = max(close * 0.002, 0.01)
-            stop = close - risk if direction == "BUY" else close + risk
-        target = close + 2.0 * risk if direction == "BUY" else close - 2.0 * risk
-        return {
-            "underlying": underlying, "symbol": underlying, "signal": direction,
-            "pattern": candidate["pattern"], "score": metrics["score"], "status": status,
-            "pattern_quality": float(candidate.get("quality") or 0), "trigger_level": round(trigger, 4),
-            "buy_above": round(trigger, 4) if direction == "BUY" else None,
-            "sell_below": round(trigger, 4) if direction == "SELL" else None,
-            "trigger_state": "HISTORICAL_5M_CONFIRMED" if status == "CONFIRMED" else "WAITING_5M_CONFIRMATION",
-            "price": close, "close_5min": close, "vol_ratio_5min": metrics["volume_ratio"],
-            "ema9": metrics["ema9"], "ema20": metrics["ema20"], "ema50": metrics["ema50"],
-            "vwap": metrics["vwap"], "fib_level": None, "stop_loss": round(stop, 4),
-            "target": round(target, 4), "rr": 2.0, "time": str(rows[index]["ts"]),
-            "created_at": dt.isoformat(),
-            "reason": f"{candidate['pattern']}; {candidate.get('detail', 'historical 5-minute pattern confirmed')}; indicator/volume score={metrics['score']:.2f}.",
-            "data_sources": ["GROWW_HISTORICAL_5MIN"], "research_only": True, "trading": "DISABLED",
-        }
-
-    @classmethod
-    def _historical_signals(cls, underlying: str, rows: list[dict[str, float | str]]) -> list[dict[str, Any]]:
-        if len(rows) < cls.MIN_BARS:
-            return []
-        results: list[dict[str, Any]] = []
-        for index in range(1, len(rows)):
-            candidates = PriceActionPatternDetector.detect(rows, index)
-            for candidate in candidates[:3]:
-                signal = cls._make_signal(underlying, rows, index, candidate)
-                if signal:
-                    results.append(signal)
-        return results
-
-    @classmethod
-    def _latest_setup(cls, underlying: str, rows: list[dict[str, float | str]]) -> dict[str, Any] | None:
-        if len(rows) < cls.MIN_BARS:
-            return None
-        index = len(rows) - 1
-        candidates = PriceActionPatternDetector.setup_candidates(rows, index)
-        candidates = sorted(candidates, key=lambda x: float(x.get("quality") or 0), reverse=True)
-        for candidate in candidates:
-            signal = cls._make_signal(underlying, rows, index, candidate, status="SETUP")
-            if signal:
-                return signal
-        return None
-
-    def _universe(self) -> list[str]:
-        rows = groww_client.fno_instruments(active_only=True)
-        names = sorted({str(row.get("underlying_symbol") or "").strip().upper() for row in rows if row.get("underlying_symbol")})
+    def _universe(self):
+        rows=groww_client.fno_instruments(active_only=True)
+        names=sorted({str(r.get("underlying_symbol") or "").strip().upper() for r in rows if r.get("underlying_symbol")})
         try:
             from app.intelligence.fno_scanner import fno_scanner
-            preferred = [str(item.get("underlying") or "").upper() for item in fno_scanner.stats.get("top_underlyings", [])]
-        except Exception:
-            preferred = []
-        ordered = [name for name in preferred if name in names]
-        ordered += [name for name in names if name not in ordered]
+            preferred=[str(x.get("underlying") or "").upper() for x in fno_scanner.stats.get("top_underlyings",[])]
+        except Exception: preferred=[]
+        ordered=[x for x in preferred if x in names]; ordered += [x for x in names if x not in ordered]
         return ordered[:self.MAX_UNDERLYINGS]
 
-    def _build_cache(self) -> None:
-        today = datetime.now(IST).date()
-        start, end = today - timedelta(days=self.HISTORY_DAYS - 1), today
-        cache: dict[str, dict[str, Any]] = {}
-        request_errors = 0
-        pattern_counts: Counter[str] = Counter()
+    def _daily_setup(self, rows):
+        completed=rows[:-1] if rows else rows
+        if len(completed)<self.MIN_DAILY_BARS:return None
+        candidates=PriceActionPatternDetector.daily_setup_candidates(completed,len(completed)-1)
+        return candidates[0] if candidates else None
+
+    def _scan_underlying(self, underlying, today):
+        daily=groww_client.historical_candles(f"NSE-{underlying}",f"{today-timedelta(days=self.DAILY_HISTORY_DAYS)} 09:15:00",f"{today} 15:40:00","CASH","1day")
+        self._daily_requests+=1
+        drows=self._parse(daily)
+        if len(drows)<self.MIN_DAILY_BARS:return None
+        setup=self._daily_setup(drows)
+        if not setup:return None
+        start=today-timedelta(days=self.INTRADAY_HISTORY_DAYS)
+        intra=groww_client.historical_candles(f"NSE-{underlying}",f"{start} 09:15:00",f"{today} 15:40:00","CASH","15minute")
+        self._intraday_requests+=1
+        irows=[x for x in self._parse(intra) if self._dt(str(x["ts"])) and self._dt(str(x["ts"])).date()==today]
+        if len(irows)<self.MIN_15M_BARS:return {"setup":setup}
+        triggered=None
+        for i in range(1,len(irows)):
+            prev=float(irows[i-1]["close"]); close=float(irows[i]["close"]); level=float(setup["trigger_level"])
+            crossed=(prev<=level<close) if setup["signal"]=="BUY" else (prev>=level>close)
+            if crossed:
+                triggered=cls._signal(self,underlying,drows,irows,i,setup) if False else self._signal(underlying,drows,irows,i,setup)
+                if triggered: break
+        return {"setup":setup,"confirmed":triggered}
+
+    def _build_cache(self):
+        today=datetime.now(IST).date()
+        cache={}; counts=Counter(); errors=0
         for underlying in self._universe():
             try:
-                payload = groww_client.historical_candles(f"NSE-{underlying}", f"{start} 09:15:00", f"{end} 15:40:00", "CASH", "5minute")
-                rows = self._parse_candles(payload)
-                with self._lock:
-                    self._intraday_requests += 1
-                confirmed = self._historical_signals(underlying, rows)
-                setup = self._latest_setup(underlying, rows)
-                latest_confirmed = confirmed[-1] if confirmed else None
-                for item in confirmed:
-                    pattern_counts[str(item["pattern"])] += 1
-                if latest_confirmed or setup:
-                    cache[underlying] = {"rows": rows, "confirmed": latest_confirmed, "setup": setup}
+                result=self._scan_underlying(underlying,today)
+                if result: cache[underlying]=result; counts[str(result.get("setup",{}).get("pattern"))]+=1
             except Exception as exc:
-                request_errors += 1
-                with self._lock:
-                    self._intraday_requests += 1
-                    self._errors += 1
-                    self._last_error = f"{underlying}: {exc}"
-                logger.exception("Historical multi-pattern analysis failed for %s", underlying)
+                errors+=1; self._errors+=1; self._last_error=f"{underlying}: {exc}"; logger.exception("Daily/15m scan failed for %s",underlying)
         with self._lock:
-            self._cache = cache
-            self._cache_date = today.isoformat() if request_errors == 0 else None
-            self._setups = sum(1 for item in cache.values() if item.get("setup"))
-            self._triggered = sum(1 for item in cache.values() if item.get("confirmed"))
-            self._pattern_counts = pattern_counts
-        logger.info("Historical multi-pattern cache built: underlyings=%s requests=%s errors=%s patterns=%s", len(cache), self._intraday_requests, request_errors, dict(pattern_counts))
+            self._cache=cache; self._cache_date=today.isoformat() if errors==0 else None
+            self._setups=sum(1 for x in cache.values() if x.get("setup"))
+            self._triggered=sum(1 for x in cache.values() if x.get("confirmed"))
+            self._pattern_counts=counts
+        logger.info("Daily pattern + 15m breakout cache: underlyings=%s daily_requests=%s 15m_requests=%s errors=%s",len(cache),self._daily_requests,self._intraday_requests,errors)
 
-    def _emit(self, signal: dict[str, Any]) -> bool:
-        now = datetime.now(IST)
-        key = (str(signal["underlying"]), str(signal["signal"]), str(signal.get("time") or signal.get("created_at") or ""), str(signal.get("pattern") or ""))
+    def _emit(self, signal):
+        now=datetime.now(IST)
+        key=(str(signal["underlying"]),str(signal["signal"]),str(signal.get("time") or ""),str(signal.get("pattern") or ""))
         with self._lock:
-            if key in self._alerted:
-                return False
+            if key in self._alerted:return False
             self._alerted.add(key)
-        item = {**signal, "symbol": signal["underlying"], "price": signal["price"], "created_at": signal.get("created_at") or now.isoformat(), "research_only": True, "trading": "DISABLED"}
+        item={**signal,"symbol":signal["underlying"],"price":signal["price"],"research_only":True,"trading":"DISABLED"}
         try:
-            signal_store.insert_many([{
-                "signal_key": f"PRICE_ACTION:{key[0]}:{key[1]}:{key[2]}:{key[3]}", "created_at": now,
-                "symbol": item["symbol"], "underlying": item["underlying"], "instrument_type": "PRICE_ACTION",
-                "ltp": item["price"], "direction": item["signal"], "bias": "BULLISH" if item["signal"] == "BUY" else "BEARISH",
-                "score": item["score"], "confidence": "HIGH" if item["score"] >= 80 else "MEDIUM",
-                "event": "PRICE_ACTION", "evidence": [item["pattern"], item["reason"]], "payload": item,
-            }])
-        except Exception as exc:
-            logger.warning("Price-action signal persistence failed: %s", exc)
+            signal_store.insert_many([{"signal_key":f"PRICE_ACTION:{key[0]}:{key[1]}:{key[2]}:{key[3]}","created_at":now,
+                "symbol":item["symbol"],"underlying":item["underlying"],"instrument_type":"PRICE_ACTION","ltp":item["price"],
+                "direction":item["signal"],"bias":"BULLISH" if item["signal"]=="BUY" else "BEARISH","score":item["score"],
+                "confidence":"HIGH" if item["score"]>=80 else "MEDIUM","event":"PRICE_ACTION","evidence":[item["pattern"],item["reason"]],"payload":item}])
+        except Exception as exc: logger.warning("Price-action persistence failed: %s",exc)
         with self._lock:
-            self._signals.insert(0, item)
-            self._signals = self._signals[:50]
-            self._last_signal = now.isoformat()
+            self._signals.insert(0,item); self._signals=self._signals[:50]; self._last_signal=now.isoformat()
         return True
 
-    def _scan_once(self) -> None:
-        today = datetime.now(IST).date().isoformat()
-        if self._cache_date != today or self._market_open():
-            self._build_cache()
-        signals = []
+    def _scan_once(self):
+        today=datetime.now(IST).date()
+        if self._cache_date!=today.isoformat() or not self._market_open(): self._build_cache()
         for cached in list(self._cache.values()):
-            signal = cached.get("confirmed") or cached.get("setup")
-            if signal:
-                signals.append(signal)
-        signals.sort(key=lambda item: (float(item.get("score") or 0), str(item.get("time") or "")), reverse=True)
-        for signal in signals:
-            self._emit(signal)
-        with self._lock:
-            self._checks += 1
-            self._last_scan = datetime.now(IST).isoformat()
+            if cached.get("confirmed"): self._emit(cached["confirmed"])
+        with self._lock:self._checks+=1;self._last_scan=datetime.now(IST).isoformat()
 
-    def _run(self) -> None:
+    def _run(self):
         while self._running:
-            try:
-                self._scan_once()
-                deadline = time.monotonic() + self.CYCLE_SECONDS
+            try:self._scan_once(); deadline=time.monotonic()+self.CYCLE_SECONDS
             except Exception as exc:
-                with self._lock:
-                    self._errors += 1
-                    self._last_error = str(exc)
-                logger.exception("Historical price-action scanner cycle failed")
-                deadline = time.monotonic() + 30
-            while self._running and time.monotonic() < deadline:
-                time.sleep(min(1.0, max(0.1, deadline - time.monotonic())))
-        self._running = False
+                self._errors+=1;self._last_error=str(exc);logger.exception("Price-action cycle failed");deadline=time.monotonic()+30
+            while self._running and time.monotonic()<deadline:time.sleep(min(1,max(.1,deadline-time.monotonic())))
+        self._running=False
 
-    def start(self) -> dict[str, Any]:
+    def start(self):
         with self._lock:
-            if self.running:
-                return self.stats
-            if not groww_client.configured:
-                raise RuntimeError("Groww credentials are not configured")
-            self._running = True
-            self._thread = threading.Thread(target=self._run, name="price-action-scanner", daemon=True)
-            self._thread.start()
+            if self.running:return self.stats
+            if not groww_client.configured:raise RuntimeError("Groww credentials are not configured")
+            self._running=True;self._thread=threading.Thread(target=self._run,name="price-action-scanner",daemon=True);self._thread.start()
         return self.stats
 
-    def stop(self) -> dict[str, Any]:
-        self._running = False
-        thread = self._thread
-        if thread and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=2.0)
+    def stop(self):
+        self._running=False;thread=self._thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():thread.join(timeout=2)
         return self.stats
 
 
-price_action_scanner = PriceActionScanner()
+price_action_scanner=PriceActionScanner()
