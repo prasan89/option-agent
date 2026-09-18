@@ -152,6 +152,96 @@ class PriceActionPatternDetector:
         return []
 
 
+
+    @classmethod
+    def _classic_bottom_top(cls, rows: list[dict[str, Any]], i: int, triple: bool = False, bottom: bool = True) -> list[dict[str, Any]]:
+        if i < (55 if triple else 35):
+            return []
+        start = max(0, i - 100)
+        highs, lows = cls._pivots(rows, start, i + 1, 2)
+        pivots = lows if bottom else highs
+        needed = 3 if triple else 2
+        if len(pivots) < needed:
+            return []
+        pts = pivots[-needed:]
+        prices = [p[1] for p in pts]
+        avg = sum(prices) / len(prices)
+        tolerance = 0.035 if triple else 0.04
+        if max(prices) - min(prices) > avg * tolerance:
+            return []
+        if triple:
+            between = range(pts[0][0], pts[-1][0] + 1)
+            if bottom:
+                bridge = max(cls._high(rows, j) for j in between)
+                if bridge < avg * 1.02:
+                    return []
+            else:
+                bridge = min(cls._low(rows, j) for j in between)
+                if bridge > avg * 0.98:
+                    return []
+        else:
+            between = range(pts[0][0], pts[1][0] + 1)
+            if bottom:
+                bridge = max(cls._high(rows, j) for j in between)
+                if bridge < avg * 1.02:
+                    return []
+            else:
+                bridge = min(cls._low(rows, j) for j in between)
+                if bridge > avg * 0.98:
+                    return []
+        trigger = bridge
+        close = cls._close(rows, i)
+        if bottom:
+            if close <= trigger:
+                return [{"pattern": "TRIPLE BOTTOM" if triple else "DOUBLE BOTTOM", "signal": "BUY",
+                         "trigger_level": trigger, "quality": 86.0 if triple else 82.0,
+                         "detail": f"Daily {'triple' if triple else 'double'} bottom with repeated lows; 15-minute close above resistance required."}]
+        else:
+            if close >= trigger:
+                return [{"pattern": "TRIPLE TOP" if triple else "DOUBLE TOP", "signal": "SELL",
+                         "trigger_level": trigger, "quality": 86.0 if triple else 82.0,
+                         "detail": f"Daily {'triple' if triple else 'double'} top with repeated highs; 15-minute close below support required."}]
+        return []
+
+    @classmethod
+    def _cup_handle(cls, rows: list[dict[str, Any]], i: int, inverse: bool = False) -> list[dict[str, Any]]:
+        if i < 55:
+            return []
+        start = i - 50
+        cup_end = i - 8
+        left = cls._close(rows, start)
+        center_idx = start + 25
+        center = cls._close(rows, center_idx)
+        right = cls._close(rows, cup_end)
+        rim = (left + right) / 2.0
+        if rim <= 0 or abs(left - right) / rim > 0.07:
+            return []
+        depth = (rim - center) / rim
+        if inverse:
+            depth = (center - rim) / rim
+        if depth < 0.04:
+            return []
+        left_mid = cls._close(rows, start + 12)
+        right_mid = cls._close(rows, start + 38)
+        if inverse:
+            if not (center > left_mid and center > right_mid):
+                return []
+            handle_high = max(cls._high(rows, j) for j in range(cup_end, i + 1))
+            trigger = min(cls._low(rows, j) for j in range(start, cup_end + 1))
+            close = cls._close(rows, i)
+            if close >= trigger:
+                return []
+            return [{"pattern": "INVERSE CUP & HANDLE", "signal": "SELL", "trigger_level": trigger,
+                     "quality": 84.0, "detail": "Daily inverted U-shaped cup with handle; 15-minute close below support required."}]
+        if not (center < left_mid and center < right_mid):
+            return []
+        trigger = max(cls._high(rows, j) for j in range(start, cup_end + 1))
+        close = cls._close(rows, i)
+        if close <= trigger:
+            return []
+        return [{"pattern": "CUP & HANDLE", "signal": "BUY", "trigger_level": trigger,
+                 "quality": 84.0, "detail": "Daily U-shaped cup with handle; 15-minute close above resistance required."}]
+
     @classmethod
     def daily_setup_candidates(cls, rows: list[dict[str, Any]], i: int) -> list[dict[str, Any]]:
         """Build daily-chart pattern setups; the returned level is NOT a daily breakout.
@@ -160,6 +250,13 @@ class PriceActionPatternDetector:
             return []
         out: list[dict[str, Any]] = []
         start = max(0, i - 100)
+
+        out.extend(cls._classic_bottom_top(rows, i, triple=False, bottom=True))
+        out.extend(cls._classic_bottom_top(rows, i, triple=False, bottom=False))
+        out.extend(cls._classic_bottom_top(rows, i, triple=True, bottom=True))
+        out.extend(cls._classic_bottom_top(rows, i, triple=True, bottom=False))
+        out.extend(cls._cup_handle(rows, i, inverse=False))
+        out.extend(cls._cup_handle(rows, i, inverse=True))
         highs, lows = cls._pivots(rows, start, i + 1, 2)
 
         if len(highs) >= 3:
