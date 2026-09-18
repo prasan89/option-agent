@@ -36,7 +36,7 @@ class PriceActionScanner:
         "BULL FLAG BREAKOUT", "BEAR FLAG BREAKDOWN",
         "ROUNDING BOTTOM BREAKOUT", "ROUNDING TOP BREAKDOWN",
         "DOUBLE BOTTOM", "DOUBLE TOP", "TRIPLE BOTTOM", "TRIPLE TOP",
-        "CUP & HANDLE", "INVERSE CUP & HANDLE",
+        "CUP & HANDLE", "INVERSE CUP & HANDLE", "DAILY RANGE BREAKOUT WATCH",
         "BULLISH ENGULFING", "BEARISH ENGULFING",
         "BULLISH HARAMI", "BEARISH HARAMI",
         "PIERCING", "DARK CLOUD COVER",
@@ -157,9 +157,34 @@ class PriceActionScanner:
 
     def _daily_setup(self, rows):
         completed=rows
-        if len(completed)<self.MIN_DAILY_BARS:return None
-        candidates=PriceActionPatternDetector.daily_setup_candidates(completed,len(completed)-1)
-        return max(candidates,key=lambda x:float(x.get("quality") or 0)) if candidates else None
+        if len(completed)<self.MIN_DAILY_BARS:
+            return None
+        i=len(completed)-1
+        candidates=PriceActionPatternDetector.daily_setup_candidates(completed,i)
+        if candidates:
+            return max(candidates,key=lambda x:float(x.get("quality") or 0))
+
+        # Keep the Price Action dashboard useful even when no classical chart
+        # pattern is present. This is a WATCH setup, not a confirmed signal:
+        # use the latest completed daily range and its 20-day trend as context.
+        # The normal 15-minute close/EMA/volume confirmation is still required.
+        closes=[float(x.get("close") or 0) for x in completed[-20:]]
+        ema20=self._ema(closes,20) if closes else 0.0
+        last=completed[i]
+        close=float(last.get("close") or 0)
+        if close <= 0:
+            return None
+        if close >= ema20:
+            return {
+                "pattern":"DAILY RANGE BREAKOUT WATCH","signal":"BUY",
+                "trigger_level":float(last["high"]),"quality":68.0,
+                "detail":"No classical daily pattern detected; bullish daily trend context with breakout above the latest completed daily high."
+            }
+        return {
+            "pattern":"DAILY RANGE BREAKOUT WATCH","signal":"SELL",
+            "trigger_level":float(last["low"]),"quality":68.0,
+            "detail":"No classical daily pattern detected; bearish daily trend context with breakdown below the latest completed daily low."
+        }
 
     def _build_daily_cache(self, today):
         # During a live session the current daily candle is incomplete, so use
@@ -248,7 +273,7 @@ class PriceActionScanner:
             if crossed:
                 triggered=self._signal(underlying,drows,irows,i,setup)
                 if triggered: break
-        return {"setup":setup,"confirmed":triggered}
+        return {"setup":setup,"confirmed":triggered,"daily":drows}
 
     def _build_cache(self):
         today=datetime.now(IST).date()
