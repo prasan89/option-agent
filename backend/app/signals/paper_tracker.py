@@ -175,13 +175,13 @@ class PaperSignalTracker:
                 conn.execute(
                     """INSERT INTO paper_signal_tracker
                        (signal_key,generated_at,last_observed_at,underlying,symbol,option_type,strike,expiry,
-                        direction,signal,score,entry_price,current_price,stop_price,target_price,quantity,
+                        direction,signal,score,entry_price,current_price,stop_price,target_price,quantity,entry_at,
                         mark_pnl,pnl_pct,status,outcome_reason,metadata)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s,%s)
                     """,
                     (key, item_generated, now, underlying, symbol, option_type, strike, expiry,
                      item.get("direction"), signal, item.get("total_score", item.get("score")),
-                     premium, premium, stop, target, quantity, pnl, 0.0,
+                     premium, premium, stop, target, quantity, pnl, 0.0, item_generated,
                      "Signal recorded; waiting for subsequent option candles to determine target/stop outcome.",
                      Jsonb(item), item_generated),
                 )
