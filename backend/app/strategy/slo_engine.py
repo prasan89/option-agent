@@ -130,6 +130,7 @@ def _make_result(row: dict[str, Any], underlying: str, bias: str, signed_directi
         "signal_generated_at": row.get("timestamp_ms"),
         "quantity": int(row.get("lot_size") or 1),
         "symbol": row.get("symbol"),
+        "groww_symbol": row.get("groww_symbol"),
         "option_type": option_type,
         "strike": strike,
         "expiry": str(row.get("expiry_date") or "")[:10],
