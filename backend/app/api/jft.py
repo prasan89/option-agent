@@ -29,7 +29,8 @@ def jft_status() -> dict[str, Any]:
 @router.get("/jft/results")
 def jft_results() -> dict[str, Any]:
     stats = jft_scanner.stats
-    rows = stats.get("signals", [])
+    # Reversal events are displayed exclusively on the dedicated Reversal dashboard.
+    rows = [x for x in stats.get("signals", []) if str(x.get("trigger") or "").upper() != "REVERSAL"]
     return {
         "count": len(rows),
         "results": rows,
