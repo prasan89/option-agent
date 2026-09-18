@@ -111,7 +111,18 @@ class PaperSignalTracker:
                 signal = str(item.get("signal") or "")
                 if not symbol or not underlying:
                     continue
-                generated_key = generated.isoformat()
+                item_generated = item.get("signal_generated_at") or generated
+                if isinstance(item_generated, (int, float)):
+                    epoch = float(item_generated) / (1000.0 if float(item_generated) > 10_000_000_000 else 1.0)
+                    item_generated = datetime.fromtimestamp(epoch, tz=timezone.utc)
+                elif isinstance(item_generated, str):
+                    try:
+                        item_generated = datetime.fromisoformat(item_generated.replace("Z", "+00:00"))
+                    except ValueError:
+                        item_generated = generated
+                if item_generated.tzinfo is None:
+                    item_generated = item_generated.replace(tzinfo=timezone.utc)
+                generated_key = item_generated.isoformat()
                 key = f"{generated_key}:{symbol}:{option_type}:{strike}:{expiry}:{signal}"
                 quantity = self._quantity(item)
                 stop = self._num(item.get("stop_premium")) or None
@@ -168,11 +179,11 @@ class PaperSignalTracker:
                         mark_pnl,pnl_pct,status,outcome_reason,metadata)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'OPEN',%s,%s)
                     """,
-                    (key, generated, now, underlying, symbol, option_type, strike, expiry,
+                    (key, item_generated, now, underlying, symbol, option_type, strike, expiry,
                      item.get("direction"), signal, item.get("total_score", item.get("score")),
                      premium, premium, stop, target, quantity, pnl, 0.0,
                      "Signal recorded; waiting for subsequent option candles to determine target/stop outcome.",
-                     Jsonb(item), generated),
+                     Jsonb(item), item_generated),
                 )
                 written += 1
             conn.commit()
