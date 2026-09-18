@@ -154,14 +154,33 @@ class PriceActionScanner:
         return candidates[0] if candidates else None
 
     def _scan_underlying(self, underlying, today):
-        # Price Action is historical REST-only. Do not request future timestamps during market hours.\n        daily_end = today - timedelta(days=1)\n        daily=groww_client.historical_candles(f"NSE-{underlying}",f"{today-timedelta(days=self.DAILY_HISTORY_DAYS)} 09:15:00",f"{daily_end} 15:40:00","CASH","1day")
+        # Price Action is historical REST-only. Do not request future timestamps during market hours.
+        daily_end = today - timedelta(days=1)
+        daily = groww_client.historical_candles(
+            f"NSE-{underlying}",
+            f"{today-timedelta(days=self.DAILY_HISTORY_DAYS)} 09:15:00",
+            f"{daily_end} 15:40:00",
+            "CASH",
+            "1day",
+        )
         self._daily_requests+=1
         drows=self._parse(daily)
         if len(drows)<self.MIN_DAILY_BARS:return None
         setup=self._daily_setup(drows)
         if not setup:return None
         start=today-timedelta(days=self.INTRADAY_HISTORY_DAYS)
-        now=datetime.now(IST)\n        intraday_end = min(now, datetime.combine(today, datetime.min.time(), tzinfo=IST).replace(hour=15, minute=40))\n        intra=groww_client.historical_candles(f"NSE-{underlying}",f"{start} 09:15:00",intraday_end.strftime("%Y-%m-%d %H:%M:%S"),"CASH","15minute")
+        now = datetime.now(IST)
+        intraday_end = min(
+            now,
+            datetime.combine(today, datetime.min.time(), tzinfo=IST).replace(hour=15, minute=40),
+        )
+        intra = groww_client.historical_candles(
+            f"NSE-{underlying}",
+            f"{start} 09:15:00",
+            intraday_end.strftime("%Y-%m-%d %H:%M:%S"),
+            "CASH",
+            "15minute",
+        )
         self._intraday_requests+=1
         irows=[x for x in self._parse(intra) if self._dt(str(x["ts"])) and self._dt(str(x["ts"])).date()==today]
         if len(irows)<self.MIN_15M_BARS:return {"setup":setup}
