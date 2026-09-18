@@ -229,15 +229,16 @@ class PriceActionPatternDetector:
             handle_high = max(cls._high(rows, j) for j in range(cup_end, i + 1))
             trigger = min(cls._low(rows, j) for j in range(start, cup_end + 1))
             close = cls._close(rows, i)
-            if close >= trigger:
+            if handle_high > rim * 1.10 or close < trigger:
                 return []
             return [{"pattern": "INVERSE CUP & HANDLE", "signal": "SELL", "trigger_level": trigger,
                      "quality": 84.0, "detail": "Daily inverted U-shaped cup with handle; 15-minute close below support required."}]
         if not (center < left_mid and center < right_mid):
             return []
         trigger = max(cls._high(rows, j) for j in range(start, cup_end + 1))
+        handle_low = min(cls._low(rows, j) for j in range(cup_end, i + 1))
         close = cls._close(rows, i)
-        if close <= trigger:
+        if handle_low < rim * 0.90 or close > trigger:
             return []
         return [{"pattern": "CUP & HANDLE", "signal": "BUY", "trigger_level": trigger,
                  "quality": 84.0, "detail": "Daily U-shaped cup with handle; 15-minute close above resistance required."}]
