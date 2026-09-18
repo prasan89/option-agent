@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from app.price_action.patterns import PriceActionPatternDetector
 from app.services.groww_client import groww_client
 from app.signals.store import signal_store
+from app.signals.price_action_paper_tracker import price_action_paper_tracker
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -35,6 +36,11 @@ class PriceActionScanner:
         "ROUNDING BOTTOM BREAKOUT", "ROUNDING TOP BREAKDOWN",
         "DOUBLE BOTTOM", "DOUBLE TOP", "TRIPLE BOTTOM", "TRIPLE TOP",
         "CUP & HANDLE", "INVERSE CUP & HANDLE",
+        "BULLISH ENGULFING", "BEARISH ENGULFING",
+        "BULLISH HARAMI", "BEARISH HARAMI",
+        "PIERCING", "DARK CLOUD COVER",
+        "MORNING STAR", "EVENING STAR",
+        "THREE WHITE SOLDIERS", "THREE BLACK CROWS",
     )
 
     def __init__(self) -> None:
@@ -196,6 +202,10 @@ class PriceActionScanner:
                 "direction":item["signal"],"bias":"BULLISH" if item["signal"]=="BUY" else "BEARISH","score":item["score"],
                 "confidence":"HIGH" if item["score"]>=80 else "MEDIUM","event":"PRICE_ACTION","evidence":[item["pattern"],item["reason"]],"payload":item}])
         except Exception as exc: logger.warning("Price-action persistence failed: %s",exc)
+        try:
+            price_action_paper_tracker.record_signal(item)
+        except Exception as exc:
+            logger.warning("Price-action paper tracker record failed: %s", exc)
         with self._lock:
             self._signals.insert(0,item); self._signals=self._signals[:50]; self._last_signal=now.isoformat()
         return True
