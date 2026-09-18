@@ -99,7 +99,7 @@ class PriceActionScanner:
         prev=vols[max(0,i-12):i]; avg=sum(prev)/len(prev) if prev else 0
         vr=vols[i]/avg if avg else 0
         trend=(close>ema9>ema20) if direction=="BUY" else (close<ema9<ema20)
-        score=55+min(10,quality*.10)+(15 if trend else 0)+(min(15,vr*10) if vr else 0)
+        score=60+min(10,quality*.10)+(15 if trend else 0)+(min(15,vr*10) if vr else 0)
         return {"score":round(min(100,score),2),"ema9_15m":round(ema9,2),"ema20_15m":round(ema20,2),"volume_ratio_15m":round(vr,2)}
 
     @classmethod
@@ -200,7 +200,7 @@ class PriceActionScanner:
 
     def _scan_once(self):
         today=datetime.now(IST).date()
-        if self._cache_date!=today.isoformat() or not self._market_open(): self._build_cache()
+        if self._cache_date!=today.isoformat() or self._market_open(): self._build_cache()
         for cached in list(self._cache.values()):
             if cached.get("confirmed"): self._emit(cached["confirmed"])
         with self._lock:self._checks+=1;self._last_scan=datetime.now(IST).isoformat()
