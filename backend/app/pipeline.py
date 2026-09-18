@@ -114,39 +114,42 @@ class ResearchPipeline:
             research_store.init()
             self._last_error = None
             started: list[Any] = []
+            failures: list[str] = []
+
+            def start_component(name: str, component: Any) -> None:
+                try:
+                    if not component.running:
+                        component.start()
+                        started.append(component)
+                except Exception as exc:
+                    failures.append(f"{name}: {exc}")
+                    logger.exception("Research component %s failed to start; continuing with other components", name)
+
+            start_component("flow", flow_engine)
+            start_component("intelligence_score", intelligence_score_engine)
+            start_component("dataset", historical_dataset_collector)
+            start_component("ml", ml_engine)
+            start_component("signal_monitor", signal_monitor)
+
+            # Market-data feed failure must not prevent historical Price Action,
+            # JFT, or the HTTP dashboard from starting.
             try:
-                if not flow_engine.running:
-                    flow_engine.start(); started.append(flow_engine)
-                if not intelligence_score_engine.running:
-                    intelligence_score_engine.start(); started.append(intelligence_score_engine)
-                if not historical_dataset_collector.running:
-                    historical_dataset_collector.start(); started.append(historical_dataset_collector)
-                if not ml_engine.running:
-                    ml_engine.start(); started.append(ml_engine)
-                if not signal_monitor.running:
-                    signal_monitor.start(); started.append(signal_monitor)
                 if not feed_service.running and not feed_service.starting:
                     instruments = self._feed_instruments()
                     feed_service.start(instruments)
                     self._feed_symbols = len(instruments)
                     started.append(feed_service)
-                if not fno_scanner.running:
-                    fno_scanner.start(); started.append(fno_scanner)
-                if not price_action_scanner.running:
-                    price_action_scanner.start(); started.append(price_action_scanner)
-                if not jft_scanner.running:
-                    jft_scanner.start(); started.append(jft_scanner)
-                self._running = True
-                return self.stats
             except Exception as exc:
-                self._last_error = str(exc)
-                for component in reversed(started):
-                    try:
-                        component.stop()
-                    except Exception:
-                        logger.exception("Failed to roll back pipeline component")
-                self._running = False
-                raise
+                failures.append(f"feed: {exc}")
+                logger.exception("Groww feed failed to start; historical scanners will continue")
+
+            start_component("fno_scanner", fno_scanner)
+            start_component("price_action", price_action_scanner)
+            start_component("jft", jft_scanner)
+
+            self._last_error = " | ".join(failures) if failures else None
+            self._running = True
+            return self.stats
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
