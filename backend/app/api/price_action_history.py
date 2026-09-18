@@ -10,7 +10,7 @@ from app.signals.store import signal_store
 
 router = APIRouter(tags=["price-action-history"])
 
-EXCLUDED_PATTERNS = {"5M RANGE BREAKOUT", "5M RANGE BREAKDOWN", "RISING WEDGE BREAKOUT", "RISING WEDGE BREAKDOWN"}
+EXCLUDED_PATTERNS = {"5M RANGE BREAKOUT", "5M RANGE BREAKDOWN", "RISING BREAKOUT", "RISING BREAKDOWN"}
 
 
 def _history() -> list[dict[str, Any]]:
